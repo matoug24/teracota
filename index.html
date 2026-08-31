@@ -1,0 +1,88 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>TeraCota Operations Tracker</title>
+    <link rel="stylesheet" href="/assets/flask_styles.css" />
+  </head>
+  <body data-page="{{ initial_page }}" data-system-id="{{ initial_system_id }}">
+    <div class="app-shell">
+      <header class="topbar">
+        <div class="brand">
+          <div class="brand-mark">TC</div>
+          <div>
+            <h1>TeraCota</h1>
+            <p>Operations tracker</p>
+          </div>
+        </div>
+
+        <nav class="nav-tabs" aria-label="Main views">
+          <button class="nav-tab nav-tab-primary active" type="button" data-view="systems">Systems</button>
+          <button class="nav-tab" type="button" data-view="development">Development</button>
+        </nav>
+
+        <div class="auth-area" id="authArea"></div>
+      </header>
+
+      <main class="main">
+        <section class="dashboard" id="systemsView" aria-labelledby="dashboardTitle">
+          <div class="section-header">
+            <div>
+              <p class="eyebrow">Operations timeline</p>
+              <h2 id="dashboardTitle">Systems by Location</h2>
+            </div>
+            <button class="primary-button requires-auth hidden" id="addSystemButton" type="button">Add System</button>
+          </div>
+
+          <div class="metric-grid" id="metricGrid" aria-label="Fleet summary"></div>
+          <div class="timeline-legend" aria-label="Timeline legend">
+            <span><i class="legend-dot visit"></i>Visit</span>
+            <span><i class="legend-dot issue-low"></i>Low issue</span>
+            <span><i class="legend-dot issue-medium"></i>Medium issue</span>
+            <span><i class="legend-dot issue-high"></i>High issue</span>
+            <span><i class="legend-dot closed"></i>Closed</span>
+          </div>
+          <div class="timeline-area" id="timelineArea" aria-label="System timeline"></div>
+        </section>
+
+        <section class="development-panel hidden" id="developmentPanel" aria-labelledby="developmentTitle">
+          <div class="section-header">
+            <div>
+              <p class="eyebrow">Shared improvement work</p>
+              <h2 id="developmentTitle">Development</h2>
+            </div>
+            <button class="primary-button requires-auth hidden" id="addTaskButton" type="button">Add Task</button>
+          </div>
+          <div class="task-columns" id="taskColumns"></div>
+        </section>
+
+        <section class="system-detail-page hidden" id="systemDetailPage" aria-live="polite"></section>
+      </main>
+    </div>
+
+    <dialog id="entryDialog">
+      <form method="dialog" id="entryForm">
+        <div class="dialog-header">
+          <h3 id="dialogTitle">Add entry</h3>
+          <button class="icon-button" value="cancel" type="submit" aria-label="Close">x</button>
+        </div>
+        <div id="dialogFields" class="dialog-fields"></div>
+        <div class="dialog-actions">
+          <button class="secondary-button" value="cancel" type="submit">Cancel</button>
+          <button class="primary-button" id="saveDialogButton" value="default" type="submit">Save</button>
+        </div>
+      </form>
+    </dialog>
+
+    <dialog id="detailDialog">
+      <div class="dialog-header">
+        <h3 id="detailDialogTitle">Details</h3>
+        <button class="icon-button" id="closeDetailDialog" type="button" aria-label="Close">x</button>
+      </div>
+      <div class="dialog-detail" id="detailDialogContent"></div>
+    </dialog>
+
+    <script src="/assets/flask_app_v3.js?v=20260829-timeline-zoom2"></script>
+  </body>
+</html>

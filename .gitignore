@@ -1,0 +1,5 @@
+__pycache__/
+*.py[cod]
+teracota.sqlite3
+teracota.sqlite3-shm
+teracota.sqlite3-wal

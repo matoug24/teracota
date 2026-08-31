@@ -1,0 +1,100 @@
+@import url("/assets/flask_styles.css");
+
+:root {
+  --bg: #eceeeb;
+  --surface: #fafbf8;
+  --surface-alt: #e2ebe7;
+  --text: #293235;
+  --muted: #687276;
+  --line: #c1c8c5;
+  --blue: #168f83;
+  --green: #3a946b;
+  --amber: #c68c16;
+  --red: #bd4840;
+  --cyan: #287e95;
+  --shadow: 0 5px 16px rgba(36, 45, 47, 0.12);
+}
+
+body {
+  background: #eceeeb;
+}
+
+.topbar {
+  border-bottom: 1px solid #111719;
+  background: #30383c;
+}
+
+.brand-mark {
+  border: 2px solid #1e292c;
+  background: #d6df49;
+  color: #222a2c;
+  font-family: Consolas, "Courier New", monospace;
+}
+
+.topbar .nav-tab.active {
+  border-color: #d6df49;
+  background: #d6df49;
+  color: #222a2c;
+}
+
+h2,
+h3,
+.metric strong {
+  font-weight: 650;
+}
+
+.eyebrow,
+.metric span,
+.timeline-scale,
+.record-filter > span,
+.tag {
+  font-family: Consolas, "Courier New", monospace;
+}
+
+.metric,
+.location-group,
+.system-detail-hero,
+.detail-section,
+.location-hero,
+.admin-section {
+  border-top: 4px solid #687276;
+  box-shadow: 0 2px 8px rgba(36, 45, 47, 0.08);
+}
+
+.detail-section:nth-child(2n),
+.admin-section:nth-child(2n) {
+  border-top-color: #168f83;
+}
+
+.timeline-track {
+  border: 1px inset #b3bdb9;
+  background-color: #d8ddda;
+}
+
+.primary-button,
+.filter-button.active {
+  background: #168f83;
+}
+
+.secondary-button,
+.filter-button,
+.timeline-control {
+  border-color: #aab3b0;
+  background: #f7f8f5;
+}
+
+.status-pill,
+.tag,
+.status-history-item {
+  border: 1px solid #c1c8c5;
+  background: #eef1ed;
+}
+
+.theme-option.active {
+  border-color: #168f83;
+  box-shadow: inset 0 0 0 2px #168f83;
+}
+
+.theme-selected {
+  color: #168f83;
+}

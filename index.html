@@ -4,9 +4,9 @@
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <title>TeraCota Operations Tracker</title>
-    <link rel="stylesheet" href="/assets/flask_styles.css" />
+    <link id="themeStylesheet" rel="stylesheet" href="/assets/{{ theme_css }}" />
   </head>
-  <body data-page="{{ initial_page }}" data-system-id="{{ initial_system_id }}">
+  <body data-page="{{ initial_page }}" data-system-id="{{ initial_system_id }}" data-location="{{ initial_location }}">
     <div class="app-shell">
       <header class="topbar">
         <div class="brand">
@@ -37,11 +37,10 @@
 
           <div class="metric-grid" id="metricGrid" aria-label="Fleet summary"></div>
           <div class="timeline-legend" aria-label="Timeline legend">
-            <span><i class="legend-dot visit"></i>Visit</span>
-            <span><i class="legend-dot issue-low"></i>Low issue</span>
-            <span><i class="legend-dot issue-medium"></i>Medium issue</span>
-            <span><i class="legend-dot issue-high"></i>High issue</span>
-            <span><i class="legend-dot closed"></i>Closed</span>
+            <div class="legend-group"><strong>Event Type</strong><span><i class="legend-dot visit"></i>Visit (V)</span><span><i class="legend-dot issue"></i>Issue (I)</span></div>
+            <div class="legend-group"><strong>Issue Severity</strong><span><i class="legend-dot issue-high"></i>High</span><span><i class="legend-dot issue-medium"></i>Medium</span><span><i class="legend-dot issue-low"></i>Low</span></div>
+            <div class="legend-group"><strong>Issue State</strong><span><i class="legend-dot closed"></i>Closed</span></div>
+            <div class="legend-group"><strong>System Status</strong><span><i class="legend-dot status-operational"></i>Operational</span><span><i class="legend-dot status-needs-maintenance"></i>Needs Maintenance</span><span><i class="legend-dot status-offline"></i>Offline</span><span><i class="legend-dot status-commissioning"></i>Commissioning</span></div>
           </div>
           <div class="timeline-area" id="timelineArea" aria-label="System timeline"></div>
         </section>
@@ -58,6 +57,8 @@
         </section>
 
         <section class="system-detail-page hidden" id="systemDetailPage" aria-live="polite"></section>
+        <section class="location-detail-page hidden" id="locationDetailPage" aria-live="polite"></section>
+        <section class="admin-page hidden" id="adminPage" aria-live="polite"></section>
       </main>
     </div>
 
@@ -83,6 +84,6 @@
       <div class="dialog-detail" id="detailDialogContent"></div>
     </dialog>
 
-    <script src="/assets/flask_app_v3.js?v=20260829-timeline-zoom2"></script>
+    <script src="/assets/flask_app_v3.js?v=20260831-db-write-fix"></script>
   </body>
 </html>

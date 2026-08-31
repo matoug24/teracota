@@ -1,8 +1,8 @@
-let state = { authenticated: false, systems: [], tasks: [] };
+let state = { authenticated: false, systems: [], tasks: [], locations: [], theme: "standard" };
 let activeView = "systems";
 let dialogMode = null;
 let editingItem = null;
-let dashboardRangeMonths = 6;
+let dashboardRangeMonths = 9;
 let dashboardRangeOffset = 0;
 let detailRangeScale = 1;
 let detailRangeOffset = 0;
@@ -12,7 +12,13 @@ let visitTypeFilter = "All";
 
 const pageMode = document.body.dataset.page || "home";
 const initialSystemId = Number(document.body.dataset.systemId || 0);
+const initialLocation = document.body.dataset.location || "";
 const visitCategories = ["Calibration", "Optics", "Commissioning", "Electronics"];
+const themeOptions = [
+  { id: "standard", name: "Standard", description: "Clean field operations", colors: ["#10252f", "#f0b64c", "#f4f7f9"] },
+  { id: "control-room", name: "Control Room", description: "Graphite industrial console", colors: ["#242a2d", "#45b97c", "#ffbd45"] },
+  { id: "instrument", name: "Instrument", description: "Lab equipment interface", colors: ["#f2f3ef", "#31393c", "#16a085"] },
+];
 
 const authArea = document.querySelector("#authArea");
 const metricGrid = document.querySelector("#metricGrid");
@@ -21,17 +27,21 @@ const developmentPanel = document.querySelector("#developmentPanel");
 const taskColumns = document.querySelector("#taskColumns");
 const systemsView = document.querySelector("#systemsView");
 const systemDetailPage = document.querySelector("#systemDetailPage");
+const locationDetailPage = document.querySelector("#locationDetailPage");
+const adminPage = document.querySelector("#adminPage");
+const themeStylesheet = document.querySelector("#themeStylesheet");
 const entryDialog = document.querySelector("#entryDialog");
 const entryForm = document.querySelector("#entryForm");
 const dialogTitle = document.querySelector("#dialogTitle");
 const dialogFields = document.querySelector("#dialogFields");
+const saveDialogButton = document.querySelector("#saveDialogButton");
 const detailDialog = document.querySelector("#detailDialog");
 const detailDialogTitle = document.querySelector("#detailDialogTitle");
 const detailDialogContent = document.querySelector("#detailDialogContent");
 
 document.querySelectorAll(".nav-tab").forEach((button) => {
   button.addEventListener("click", () => {
-    if (pageMode === "system") {
+    if (pageMode !== "home") {
       window.location.href = button.dataset.view === "development" ? "/#development" : "/";
       return;
     }
@@ -51,7 +61,9 @@ document.addEventListener("click", (event) => {
   const action = button.dataset.action;
   if (action === "editSystem") openDialog("editSystem", system);
   if (action === "maintenance") openDialog("maintenance");
+  if (action === "siteVisit") openDialog("siteVisit");
   if (action === "issue") openDialog("systemIssue");
+  if (action === "editLocation") openDialog("editLocation", getCurrentLocation());
   if (action === "deleteSystem" && system) deleteItem("system", system.id);
 });
 
@@ -77,11 +89,12 @@ async function sendJson(url, options) {
     headers: { "Content-Type": "application/json" },
     ...options,
   });
+  const payload = await response.json().catch(() => ({}));
   if (!response.ok) {
     if (response.status === 401) showLogin();
-    throw new Error(`Request failed: ${response.status}`);
+    throw new Error(payload.message || `Unable to complete the request (${response.status}).`);
   }
-  state = await response.json();
+  state = payload;
   render();
 }
 
@@ -93,9 +106,20 @@ function setActiveView(view) {
 
 function render() {
   renderAuth();
+  applyTheme();
 
   if (pageMode === "system") {
     renderSystemDetailPage();
+    return;
+  }
+
+  if (pageMode === "location") {
+    renderLocationDetailPage();
+    return;
+  }
+
+  if (pageMode === "admin") {
+    renderAdminPage();
     return;
   }
 
@@ -103,6 +127,8 @@ function render() {
   systemsView.classList.toggle("hidden", showingDevelopment);
   developmentPanel.classList.toggle("hidden", !showingDevelopment);
   systemDetailPage.classList.add("hidden");
+  locationDetailPage.classList.add("hidden");
+  adminPage.classList.add("hidden");
 
   document.querySelectorAll(".nav-tab").forEach((button) => {
     button.classList.toggle("active", button.dataset.view === activeView);
@@ -112,6 +138,13 @@ function render() {
   renderTimeline();
   renderTasks();
   setEditVisibility();
+}
+
+function applyTheme() {
+  const theme = themeOptions.find((option) => option.id === state.theme) || themeOptions[0];
+  const filename = theme.id === "standard" ? "flask_styles.css" : `flask_styles_${theme.id.replace("-", "_")}.css`;
+  const nextHref = `/assets/${filename}`;
+  if (!themeStylesheet.href.endsWith(nextHref)) themeStylesheet.href = nextHref;
 }
 
 function renderAuth() {
@@ -134,6 +167,7 @@ function showLogin() {
   dialogMode = "login";
   editingItem = null;
   dialogTitle.textContent = "Log in";
+  saveDialogButton.textContent = "Log in";
   dialogFields.innerHTML = [
     field("username", "Username", "text", ""),
     field("password", "Password", "password", ""),
@@ -193,7 +227,7 @@ function renderTimeline() {
     .map(([location, systems]) => `
       <section class="location-group">
         <header class="location-header">
-          <h3>${escapeHtml(location)}</h3>
+          <h3><a href="/locations/${encodeURIComponent(location)}">${escapeHtml(location)}</a></h3>
           <span>${systems.length} system${systems.length === 1 ? "" : "s"}</span>
         </header>
         ${renderTimelineScale(dashboardTimeline.start, dashboardTimeline.end)}
@@ -217,9 +251,11 @@ function renderTimeline() {
 
 function renderTimelineRow(system, start, end) {
   const markers = eventMarkers(system, start, end);
-  const laneCount = Math.max(1, ...markers.map((marker) => marker.lane + 1));
+  const segments = statusSegments(system, start, end);
+  const visitLaneCount = Math.max(1, ...markers.filter((marker) => marker.kind === "visit").map((marker) => marker.lane + 1));
+  const issueLaneCount = Math.max(1, ...markers.filter((marker) => marker.kind === "issue").map((marker) => marker.lane + 1));
+  const trackHeight = 70 + (Math.max(visitLaneCount, issueLaneCount) - 1) * 54;
   const openIssueCount = system.issues.filter((issue) => issue.status !== "Closed").length;
-  const statusClass = getStatusClass(system.status);
 
   return `
     <button class="timeline-row" type="button" data-system-id="${system.id}">
@@ -227,11 +263,19 @@ function renderTimelineRow(system, start, end) {
         <strong>${escapeHtml(system.name)}</strong>
         <span>${escapeHtml(system.status)} - ${openIssueCount} open issue${openIssueCount === 1 ? "" : "s"}</span>
       </div>
-      <div class="timeline-track" style="--lane-count: ${laneCount}" aria-label="${escapeAttribute(system.name)} timeline">
-        <span class="status-bar ${statusClass}"></span>
+      <div class="timeline-track" style="--track-height: ${trackHeight}px" aria-label="${escapeAttribute(system.name)} timeline">
+        ${segments.map(renderStatusSegment).join("")}
         ${markers.map(renderMarker).join("")}
       </div>
     </button>
+  `;
+}
+
+function renderStatusSegment(segment) {
+  return `
+    <span class="status-bar status-segment ${getStatusClass(segment.status)}"
+      style="left: ${segment.left}%; width: ${segment.width}%"
+      title="${escapeAttribute(segment.status)} from ${escapeAttribute(formatDate(segment.startedAt))}"></span>
   `;
 }
 
@@ -284,9 +328,8 @@ function renderSystemDetailPage() {
       <a class="secondary-button link-button" href="/">Back to Systems</a>
       <div class="detail-actions requires-auth">
         <button class="secondary-button" type="button" data-action="editSystem">Edit Info</button>
-        <button class="primary-button" type="button" data-action="maintenance">Add Visit</button>
+        <button class="primary-button" type="button" data-action="maintenance">Add Site Visit</button>
         <button class="secondary-button" type="button" data-action="issue">Report Issue</button>
-        <button class="danger-button" type="button" data-action="deleteSystem">Delete System</button>
       </div>
     </div>
 
@@ -294,16 +337,6 @@ function renderSystemDetailPage() {
       <div class="system-hero-copy">
         <p class="eyebrow">${escapeHtml(system.location)}</p>
         <h2>${escapeHtml(system.name)}</h2>
-        <div class="hero-summary">
-          <div>
-            <span>Open Issues</span>
-            <strong>${openIssueCount}</strong>
-          </div>
-          <div class="hero-notes">
-            <span>Operations Notes</span>
-            <p>${escapeHtml(system.notes || "No notes yet.")}</p>
-          </div>
-        </div>
       </div>
       ${statusPill(system.status)}
     </section>
@@ -315,6 +348,20 @@ function renderSystemDetailPage() {
       </header>
       ${renderTimelineScale(fullTimeline.start, fullTimeline.end, "detail-timeline-scale")}
       ${renderTimelineRow(system, fullTimeline.start, fullTimeline.end)}
+      <div class="status-history-list" aria-label="Status history">
+        ${system.status_history.map((entry) => `
+          <span class="status-history-item">
+            <i class="status-dot ${getStatusClass(entry.status)}"></i>
+            ${escapeHtml(entry.status)} <small>from ${formatDate(entry.started_at)}</small>
+          </span>
+        `).join("")}
+      </div>
+      <div class="timeline-summary">
+        <div><span>Open Issues</span><strong>${openIssueCount}</strong></div>
+        <div><span>Total Issues</span><strong>${system.issues.length}</strong></div>
+        <div><span>Total Visits</span><strong>${system.maintenance.length}</strong></div>
+        <div class="timeline-notes"><span>Operations Notes</span><p>${escapeHtml(system.notes || "No notes yet.")}</p></div>
+      </div>
     </section>
 
     <div class="detail-layout">
@@ -381,6 +428,245 @@ function bindRecordFilters() {
       renderSystemDetailPage();
     });
   });
+}
+
+function renderLocationDetailPage() {
+  systemsView.classList.add("hidden");
+  developmentPanel.classList.add("hidden");
+  systemDetailPage.classList.add("hidden");
+  adminPage.classList.add("hidden");
+  locationDetailPage.classList.remove("hidden");
+  setSystemsNavActive();
+
+  const location = getCurrentLocation();
+  const systems = state.systems.filter((system) => system.location === initialLocation);
+  const issues = systems.flatMap((system) => system.issues.map((issue) => ({ ...issue, systemName: system.name, systemId: system.id })));
+  const visits = systems.flatMap((system) => system.maintenance.map((visit) => ({ ...visit, systemName: system.name, systemId: system.id })));
+  const siteVisits = groupSiteVisits(visits);
+  issues.sort((a, b) => String(b.opened).localeCompare(String(a.opened)));
+  const openIssues = issues.filter((issue) => issue.status !== "Closed").length;
+  const locationTimeline = timelineWindow(dashboardRangeMonths, dashboardRangeOffset);
+
+  if (!location && !systems.length) {
+    locationDetailPage.innerHTML = `
+      <div class="detail-page-header"><a class="secondary-button link-button" href="/">Back to Systems</a></div>
+      <div class="empty-card"><h3>Location not found</h3><p>No systems or location information were found.</p></div>
+    `;
+    return;
+  }
+
+  locationDetailPage.innerHTML = `
+    <div class="detail-page-header">
+      <a class="secondary-button link-button" href="/">Back to Systems</a>
+      <div class="detail-actions requires-auth">
+        <button class="primary-button" type="button" data-action="siteVisit">Add Site Visit</button>
+      </div>
+    </div>
+
+    <section class="location-hero">
+      <div>
+        <p class="eyebrow">Location overview</p>
+        <h2>${escapeHtml(initialLocation)}</h2>
+      </div>
+      <div class="location-metrics">
+        ${metricCard("Systems", systems.length)}
+        ${metricCard("Open Issues", openIssues)}
+        ${metricCard("Total Issues", issues.length)}
+        ${metricCard("Total Visits", siteVisits.length)}
+      </div>
+    </section>
+
+    <section class="detail-section location-systems-timeline">
+      <header><h3>Systems</h3><span class="tag">${systems.length}</span></header>
+      ${renderTimelineControls("location", locationTimeline, `${dashboardRangeMonths} month${dashboardRangeMonths === 1 ? "" : "s"}`)}
+      ${renderTimelineScale(locationTimeline.start, locationTimeline.end, "detail-timeline-scale")}
+      <div class="timeline-list">
+        ${systems.length ? systems.map((system) => renderTimelineRow(system, locationTimeline.start, locationTimeline.end)).join("") : '<p class="muted">No systems at this location.</p>'}
+      </div>
+    </section>
+
+    <div class="detail-layout location-records">
+      <section class="detail-section">
+        <header><h3>Combined Issues</h3><span class="tag">${issues.length}</span></header>
+        <div class="issue-list">${renderLocationIssues(issues)}</div>
+      </section>
+      <section class="detail-section">
+        <header><h3>Site Visit History</h3><span class="tag">${siteVisits.length}</span></header>
+        <div class="record-list">${renderLocationVisits(siteVisits)}</div>
+      </section>
+    </div>
+  `;
+  locationDetailPage.querySelectorAll(".timeline-row").forEach((button) => {
+    button.addEventListener("click", () => {
+      window.location.href = `/systems/${button.dataset.systemId}`;
+    });
+  });
+  locationDetailPage.querySelectorAll("[data-edit-site-visit]").forEach((button) => {
+    button.addEventListener("click", () => {
+      const visit = siteVisits.find((item) => item.id === Number(button.dataset.editSiteVisit));
+      if (visit) openDialog("editSiteVisit", visit);
+    });
+  });
+  locationDetailPage.querySelectorAll("[data-delete-site-visit]").forEach((button) => {
+    button.addEventListener("click", () => deleteItem("siteVisit", Number(button.dataset.deleteSiteVisit)));
+  });
+  bindTimelineControls(locationDetailPage, "location");
+  setEditVisibility();
+}
+
+function renderAdminPage() {
+  systemsView.classList.add("hidden");
+  developmentPanel.classList.add("hidden");
+  systemDetailPage.classList.add("hidden");
+  locationDetailPage.classList.add("hidden");
+  adminPage.classList.remove("hidden");
+  setSystemsNavActive();
+
+  if (!state.authenticated) {
+    adminPage.innerHTML = `
+      <div class="section-header"><div><p class="eyebrow">Restricted tools</p><h2>Administration</h2></div></div>
+      <div class="empty-card admin-login-card">
+        <div><h3>Administrator login required</h3><p>Log in to manage systems and change the application style.</p></div>
+        <button class="primary-button" id="adminLoginButton" type="button">Log in</button>
+      </div>
+    `;
+    document.querySelector("#adminLoginButton").addEventListener("click", showLogin);
+    return;
+  }
+
+  adminPage.innerHTML = `
+    <div class="section-header">
+      <div><p class="eyebrow">Restricted tools</p><h2>Administration</h2></div>
+    </div>
+
+    <section class="admin-section">
+      <header><div><p class="eyebrow">Application appearance</p><h3>Interface Style</h3></div><span class="tag">${themeOptions.length} styles</span></header>
+      <div class="theme-grid">
+        ${themeOptions.map(renderThemeOption).join("")}
+      </div>
+    </section>
+
+    <section class="admin-section">
+      <header><div><p class="eyebrow">Fleet records</p><h3>System Management</h3></div><span class="tag">${state.systems.length} systems</span></header>
+      <div class="admin-system-list">
+        ${state.systems.map((system) => `
+          <article class="admin-system-row">
+            <div><strong>${escapeHtml(system.name)}</strong><span>${escapeHtml(system.location)} - ${escapeHtml(system.status)}</span></div>
+            <div class="item-actions">
+              <a class="secondary-button link-button" href="/systems/${system.id}">View</a>
+              <button class="secondary-button" type="button" data-admin-edit="${system.id}">Edit</button>
+              <button class="danger-button" type="button" data-admin-delete="${system.id}">Delete</button>
+            </div>
+          </article>
+        `).join("")}
+      </div>
+    </section>
+  `;
+
+  adminPage.querySelectorAll("[data-theme]").forEach((button) => {
+    button.addEventListener("click", () => sendJson("/api/settings/theme", {
+      method: "PUT",
+      body: JSON.stringify({ theme: button.dataset.theme }),
+    }));
+  });
+  adminPage.querySelectorAll("[data-admin-edit]").forEach((button) => {
+    button.addEventListener("click", () => {
+      const system = state.systems.find((item) => item.id === Number(button.dataset.adminEdit));
+      openDialog("editSystem", system);
+    });
+  });
+  adminPage.querySelectorAll("[data-admin-delete]").forEach((button) => {
+    button.addEventListener("click", () => deleteItem("system", Number(button.dataset.adminDelete)));
+  });
+}
+
+function setSystemsNavActive() {
+  document.querySelectorAll(".nav-tab").forEach((button) => {
+    button.classList.toggle("active", button.dataset.view === "systems");
+  });
+}
+
+function metricCard(label, value) {
+  return `<article class="metric"><span>${escapeHtml(label)}</span><strong>${value}</strong></article>`;
+}
+
+function repeatedIssueSummary(issues) {
+  const groups = new Map();
+  issues.forEach((issue) => {
+    const key = issue.title.trim().toLowerCase();
+    if (!key) return;
+    const item = groups.get(key) || { title: issue.title, count: 0 };
+    item.count += 1;
+    groups.set(key, item);
+  });
+  return [...groups.values()].filter((item) => item.count > 1).sort((a, b) => b.count - a.count);
+}
+
+function renderLocationIssues(issues) {
+  if (!issues.length) return '<div class="issue-item"><h3>No issues</h3><p>No issues recorded at this location.</p></div>';
+  return issues.map((issue) => `
+    <article class="issue-item issue-card-${getSeverityClass(normalizeSeverity(issue.severity))} ${issue.status === "Closed" ? "issue-card-closed" : ""}">
+      <div class="item-header"><h3>${escapeHtml(issue.title)}</h3><a class="tag link-tag" href="/systems/${issue.systemId}">${escapeHtml(issue.systemName)}</a></div>
+      <p>${escapeHtml(issue.notes || "No notes added.")}</p>
+      <div class="tag-row"><span class="tag severity-tag ${getSeverityClass(issue.severity)}">${escapeHtml(issue.severity)}</span><span class="tag ${issue.status === "Closed" ? "status-closed-tag" : ""}">${escapeHtml(issue.status)}</span><span class="tag">${formatDate(issue.opened)}</span></div>
+    </article>
+  `).join("");
+}
+
+function groupSiteVisits(visits) {
+  const groups = new Map();
+  visits.forEach((visit) => {
+    const key = visit.visit_id ? `site-${visit.visit_id}` : `record-${visit.id}`;
+    if (!groups.has(key)) {
+      groups.set(key, {
+        id: visit.visit_id || null,
+        date: visit.date,
+        engineer: visit.engineer,
+        records: [],
+      });
+    }
+    groups.get(key).records.push(visit);
+  });
+  return [...groups.values()].sort((a, b) => String(b.date).localeCompare(String(a.date)));
+}
+
+function renderLocationVisits(siteVisits) {
+  if (!siteVisits.length) return '<div class="record-item"><h3>No site visits</h3><p>No visits recorded at this location.</p></div>';
+  return siteVisits.map((visit) => `
+    <article class="record-item site-visit-item">
+      <div class="item-header">
+        <div>
+          <h3>${formatDate(visit.date)}</h3>
+          <div class="tag-row"><span class="tag">${escapeHtml(visit.engineer)}</span><span class="tag">${visit.records.length} system${visit.records.length === 1 ? "" : "s"}</span></div>
+        </div>
+        ${visit.id ? `
+          <div class="item-actions requires-auth">
+            <button class="secondary-button" type="button" data-edit-site-visit="${visit.id}">Edit Visit</button>
+            <button class="danger-button" type="button" data-delete-site-visit="${visit.id}">Delete Visit</button>
+          </div>
+        ` : ""}
+      </div>
+      <div class="site-visit-systems">
+        ${visit.records.map((record) => `
+          <div class="site-visit-system-row">
+            <a href="/systems/${record.systemId}">${escapeHtml(record.systemName)}</a>
+            <span>${escapeHtml(record.type)}</span>
+            <p>${escapeHtml(record.summary || "No summary added.")}</p>
+          </div>
+        `).join("")}
+      </div>
+    </article>
+  `).join("");
+}
+
+function renderThemeOption(theme) {
+  return `
+    <button class="theme-option ${state.theme === theme.id ? "active" : ""}" type="button" data-theme="${theme.id}">
+      <span class="theme-swatches">${theme.colors.map((color) => `<i style="background:${color}"></i>`).join("")}</span>
+      <strong>${escapeHtml(theme.name)}</strong><small>${escapeHtml(theme.description)}</small>
+      <span class="theme-selected">${state.theme === theme.id ? "Selected" : "Select"}</span>
+    </button>
+  `;
 }
 
 function renderTasks() {
@@ -468,13 +754,23 @@ function openDialog(mode, item = null) {
     },
     system: { title: "Add System", fields: systemFields() },
     editSystem: { title: "Edit System", fields: systemFields(item || system) },
+    editStatusHistory: { title: "Edit Status Event", fields: statusHistoryFields(item) },
+    editLocation: { title: `Edit ${initialLocation}`, fields: locationFields(item) },
     maintenance: {
-      title: `Add Visit - ${system?.name || "System"}`,
-      fields: maintenanceFields(),
+      title: `Add Site Visit - ${system?.location || "Location"}`,
+      fields: maintenanceFields({}, system ? [system.id] : [], system?.location || ""),
+    },
+    siteVisit: {
+      title: `Add Site Visit - ${initialLocation}`,
+      fields: maintenanceFields({}, [], initialLocation),
     },
     editMaintenance: {
       title: "Edit Visit",
       fields: maintenanceFields(item),
+    },
+    editSiteVisit: {
+      title: "Edit Site Visit",
+      fields: siteVisitFields(item),
     },
     systemIssue: {
       title: `Report Issue - ${system?.name || "System"}`,
@@ -495,13 +791,19 @@ function openDialog(mode, item = null) {
   };
 
   dialogTitle.textContent = configs[mode].title;
+  saveDialogButton.textContent = mode === "login" ? "Log in" : "Save";
   dialogFields.innerHTML = configs[mode].fields.map(renderField).join("");
+  if (mode === "editSystem") {
+    dialogFields.insertAdjacentHTML("beforeend", renderStatusHistoryManager(item || system));
+    bindStatusHistoryManager();
+  }
   entryDialog.showModal();
 }
 
 async function saveDialog() {
   const data = formPayload(entryForm);
   const system = getCurrentSystem();
+  const targetSystem = dialogMode === "editSystem" ? editingItem || system : system;
 
   try {
     if (dialogMode === "login") {
@@ -518,16 +820,33 @@ async function saveDialog() {
       return;
     }
 
-    if (dialogMode === "editSystem" && system) {
-      await sendJson(`/api/systems/${system.id}`, { method: "PUT", body: JSON.stringify(data) });
+    if (dialogMode === "editSystem" && targetSystem) {
+      await sendJson(`/api/systems/${targetSystem.id}`, { method: "PUT", body: JSON.stringify(data) });
     }
 
-    if (dialogMode === "maintenance" && system) {
-      await sendJson(`/api/systems/${system.id}/maintenance`, { method: "POST", body: JSON.stringify(data) });
+    if (dialogMode === "editLocation") {
+      await sendJson(`/api/locations/${encodeURIComponent(initialLocation)}`, { method: "PUT", body: JSON.stringify(data) });
+    }
+
+    if (dialogMode === "editStatusHistory" && editingItem) {
+      await sendJson(`/api/status-history/${editingItem.id}`, { method: "PUT", body: JSON.stringify(data) });
+    }
+
+    if (dialogMode === "maintenance" || dialogMode === "siteVisit") {
+      if (!data.system_ids || (Array.isArray(data.system_ids) && !data.system_ids.length)) {
+        showFormError("Select at least one system.");
+        return;
+      }
+      data.location = dialogMode === "maintenance" ? system?.location : initialLocation;
+      await sendJson("/api/site-visits", { method: "POST", body: JSON.stringify(data) });
     }
 
     if (dialogMode === "editMaintenance" && editingItem) {
       await sendJson(`/api/maintenance/${editingItem.id}`, { method: "PUT", body: JSON.stringify(data) });
+    }
+
+    if (dialogMode === "editSiteVisit" && editingItem) {
+      await sendJson(`/api/site-visits/${editingItem.id}`, { method: "PUT", body: JSON.stringify(data) });
     }
 
     if (dialogMode === "systemIssue" && system) {
@@ -546,7 +865,7 @@ async function saveDialog() {
       await sendJson(`/api/tasks/${editingItem.id}`, { method: "PUT", body: JSON.stringify(data) });
     }
   } catch (error) {
-    showFormError(dialogMode === "login" ? "Invalid username or password." : "Unable to save. Please log in and try again.");
+    showFormError(dialogMode === "login" ? "Invalid username or password." : error.message);
     return;
   }
 
@@ -568,19 +887,23 @@ async function deleteItem(type, id) {
   const labels = {
     system: "system",
     maintenance: "maintenance record",
+    siteVisit: "site visit and all linked system records",
     issue: "issue",
     task: "development task",
+    statusHistory: "status event",
   };
   if (!window.confirm(`Delete this ${labels[type]}?`)) return;
 
   const routes = {
     system: `/api/systems/${id}`,
     maintenance: `/api/maintenance/${id}`,
+    siteVisit: `/api/site-visits/${id}`,
     issue: `/api/issues/${id}`,
     task: `/api/tasks/${id}`,
+    statusHistory: `/api/status-history/${id}`,
   };
   await sendJson(routes[type], { method: "DELETE" });
-  if (type === "system") window.location.href = "/";
+  if (type === "system" && pageMode === "system") window.location.href = "/";
 }
 
 function systemFields(system = {}) {
@@ -594,17 +917,104 @@ function systemFields(system = {}) {
       "Offline",
       "Commissioning",
     ]),
+    field("status_start", "Status Effective Date", "date", new Date().toISOString().slice(0, 10)),
     field("notes", "Operations Notes", "textarea", system.notes || ""),
   ];
 }
 
-function maintenanceFields(record = {}) {
-  record = record || {};
+function statusHistoryFields(entry = {}) {
+  entry = entry || {};
   return [
+    field("status", "Status", "select", entry.status || "Operational", [
+      "Operational",
+      "Needs Maintenance",
+      "Offline",
+      "Commissioning",
+    ]),
+    field("started_at", "Effective Date", "date", entry.started_at || new Date().toISOString().slice(0, 10)),
+  ];
+}
+
+function renderStatusHistoryManager(system) {
+  if (!system?.status_history?.length) return "";
+  const canDelete = system.status_history.length > 1;
+  return `
+    <section class="dialog-history-manager">
+      <div class="dialog-subheader">
+        <div><span>Status Timeline</span><strong>Edit or remove historical status changes</strong></div>
+        <span class="tag">${system.status_history.length} events</span>
+      </div>
+      <div class="dialog-history-list">
+        ${system.status_history.map((entry) => `
+          <div class="dialog-history-row">
+            <span class="status-history-label"><i class="status-dot ${getStatusClass(entry.status)}"></i><strong>${escapeHtml(entry.status)}</strong><small>${formatDate(entry.started_at)}</small></span>
+            <div class="item-actions">
+              <button class="secondary-button" type="button" data-edit-status-history="${entry.id}">Edit</button>
+              <button class="danger-button" type="button" data-delete-status-history="${entry.id}" ${canDelete ? "" : "disabled"} title="${canDelete ? "Delete status event" : "A system must keep one status event"}">Delete</button>
+            </div>
+          </div>
+        `).join("")}
+      </div>
+    </section>
+  `;
+}
+
+function bindStatusHistoryManager() {
+  dialogFields.querySelectorAll("[data-edit-status-history]").forEach((button) => {
+    button.addEventListener("click", () => {
+      const system = editingItem || getCurrentSystem();
+      const entry = system.status_history.find((item) => item.id === Number(button.dataset.editStatusHistory));
+      entryDialog.close();
+      openDialog("editStatusHistory", entry);
+    });
+  });
+  dialogFields.querySelectorAll("[data-delete-status-history]").forEach((button) => {
+    button.addEventListener("click", () => {
+      entryDialog.close();
+      deleteItem("statusHistory", Number(button.dataset.deleteStatusHistory));
+    });
+  });
+}
+
+function locationFields(location = {}) {
+  location = location || {};
+  return [
+    field("contacts", "Local Contacts", "textarea", location.contacts || ""),
+    field("notes", "Shared Site Notes", "textarea", location.notes || ""),
+  ];
+}
+
+function systemsAtLocation(location) {
+  return state.systems.filter((system) => system.location === location);
+}
+
+function maintenanceFields(record = {}, selectedSystemIds = [], location = "") {
+  record = record || {};
+  const fields = [
     field("date", "Visit Date", "date", record.date || new Date().toISOString().slice(0, 10)),
     field("engineer", "Engineer", "text", record.engineer || ""),
+  ];
+  if (!record.id) {
+    fields.push(field(
+      "system_ids",
+      "Systems Serviced",
+      "checkboxes",
+      selectedSystemIds.map(String),
+      systemsAtLocation(location).map((system) => ({ value: String(system.id), label: system.name })),
+    ));
+  }
+  fields.push(
     field("type", "Work Completed", "checkboxes", splitList(record.type), visitCategories),
     field("summary", "Summary", "textarea", record.summary || ""),
+  );
+  return fields;
+}
+
+function siteVisitFields(visit = {}) {
+  visit = visit || {};
+  return [
+    field("date", "Visit Date", "date", visit.date || new Date().toISOString().slice(0, 10)),
+    field("engineer", "Engineer", "text", visit.engineer || ""),
   ];
 }
 
@@ -615,7 +1025,10 @@ function issueFields(issue = {}) {
     field("severity", "Severity", "select", normalizeSeverity(issue.severity || "Medium"), ["Low", "Medium", "High"]),
     field("opened", "Opened Date", "date", issue.opened || new Date().toISOString().slice(0, 10)),
     field("status", "Status", "select", issue.status || "Open", ["Open", "Closed"]),
+    field("reported_by", "Reported By", "text", issue.reported_by || ""),
     field("notes", "Notes", "textarea", issue.notes || ""),
+    field("resolution_notes", "Resolution Notes", "textarea", issue.resolution_notes || ""),
+    field("closed_date", "Closed Date", "date", issue.closed_date || ""),
   ];
 }
 
@@ -646,15 +1059,19 @@ function renderField(config) {
       </select>
     `;
   } else if (config.type === "checkboxes") {
-    const selected = Array.isArray(config.value) ? config.value : splitList(config.value);
+    const selected = (Array.isArray(config.value) ? config.value : splitList(config.value)).map(String);
     control = `
       <div class="checkbox-grid">
-        ${config.options.map((option) => `
-          <label class="checkbox-option">
-            <input type="checkbox" name="${config.name}" value="${escapeAttribute(option)}" ${selected.includes(option) ? "checked" : ""} />
-            <span>${escapeHtml(option)}</span>
-          </label>
-        `).join("")}
+        ${config.options.map((option) => {
+          const optionValue = String(typeof option === "object" ? option.value : option);
+          const optionLabel = typeof option === "object" ? option.label : option;
+          return `
+            <label class="checkbox-option">
+              <input type="checkbox" name="${config.name}" value="${escapeAttribute(optionValue)}" ${selected.includes(optionValue) ? "checked" : ""} />
+              <span>${escapeHtml(optionLabel)}</span>
+            </label>
+          `;
+        }).join("")}
       </div>
     `;
   } else {
@@ -721,7 +1138,7 @@ function renderIssueItems(issues, emptyMessage) {
   }
 
   return issues.map((issue) => `
-    <article class="issue-item issue-card-${getSeverityClass(normalizeSeverity(issue.severity))}">
+    <article class="issue-item issue-card-${getSeverityClass(normalizeSeverity(issue.severity))} ${issue.status === "Closed" ? "issue-card-closed" : ""}">
       <div class="item-header">
         <h3>${escapeHtml(issue.title)}</h3>
         <div class="item-actions requires-auth">
@@ -730,10 +1147,13 @@ function renderIssueItems(issues, emptyMessage) {
         </div>
       </div>
       <p>${escapeHtml(issue.notes || "No notes added.")}</p>
+      ${issue.resolution_notes ? `<div class="resolution-note"><strong>Resolution</strong><p>${escapeHtml(issue.resolution_notes)}</p></div>` : ""}
       <div class="tag-row">
         <span class="tag severity-tag ${getSeverityClass(normalizeSeverity(issue.severity))}">${escapeHtml(normalizeSeverity(issue.severity))}</span>
-        <span class="tag">${escapeHtml(issue.status)}</span>
+        <span class="tag ${issue.status === "Closed" ? "status-closed-tag" : ""}">${escapeHtml(issue.status)}</span>
+        <span class="tag">Reported by ${escapeHtml(issue.reported_by || "Unknown")}</span>
         <span class="tag">Opened ${formatDate(issue.opened)}</span>
+        ${issue.closed_date ? `<span class="tag">Closed ${formatDate(issue.closed_date)}</span>` : ""}
       </div>
     </article>
   `).join("");
@@ -757,7 +1177,7 @@ function eventMarkers(system, start, end) {
       kind: "issue",
       severityClass: getSeverityClass(normalizeSeverity(issue.severity)),
       statusClass: issue.status === "Closed" ? "closed" : "open",
-      label: "!",
+      label: "I",
       title: `${issue.status} ${issue.severity} issue - ${formatDate(issue.opened)} - ${issue.title}`,
     });
   });
@@ -770,12 +1190,30 @@ function eventMarkers(system, start, end) {
   return assignMarkerLanes(visibleEvents);
 }
 
+function statusSegments(system, start, end) {
+  const history = [...(system.status_history || [])].sort((a, b) => String(a.started_at).localeCompare(String(b.started_at)));
+  if (!history.length) return [{ status: system.status, startedAt: start, left: 0, width: 100 }];
+
+  return history.map((entry, index) => {
+    const segmentStart = startOfDay(new Date(`${entry.started_at}T00:00:00`));
+    const nextEntry = history[index + 1];
+    const segmentEnd = nextEntry ? startOfDay(new Date(`${nextEntry.started_at}T00:00:00`)) : end;
+    const clippedStart = new Date(Math.max(segmentStart.getTime(), start.getTime()));
+    const clippedEnd = new Date(Math.min(segmentEnd.getTime(), end.getTime()));
+    if (clippedEnd <= clippedStart) return null;
+    const left = Math.max(0, timelinePositionFromDate(clippedStart, start, end));
+    const right = Math.min(100, timelinePositionFromDate(clippedEnd, start, end));
+    return { status: entry.status, startedAt: entry.started_at, left, width: Math.max(0.4, right - left) };
+  }).filter(Boolean);
+}
+
 function assignMarkerLanes(events) {
-  const laneEnds = [];
+  const laneEnds = { visit: [], issue: [] };
   return events.map((event) => {
-    let lane = laneEnds.findIndex((lastPosition) => event.left - lastPosition >= 3.5);
-    if (lane === -1) lane = laneEnds.length;
-    laneEnds[lane] = event.left;
+    const lanes = laneEnds[event.kind];
+    let lane = lanes.findIndex((lastPosition) => event.left - lastPosition >= 3.5);
+    if (lane === -1) lane = lanes.length;
+    lanes[lane] = event.left;
     return { ...event, lane };
   });
 }
@@ -789,6 +1227,7 @@ function fullTimelineWindow(system) {
   const dates = [
     ...system.maintenance.map((record) => record.date),
     ...system.issues.map((issue) => issue.opened),
+    ...(system.status_history || []).map((entry) => entry.started_at),
   ].filter(Boolean).map((value) => startOfDay(new Date(`${value}T00:00:00`)));
 
   if (!dates.length) return timelineWindow();
@@ -835,16 +1274,17 @@ function bindTimelineControls(container, scope) {
     button.addEventListener("click", (event) => {
       event.stopPropagation();
       const action = button.dataset.timelineAction;
-      if (scope === "dashboard") {
+      if (scope === "dashboard" || scope === "location") {
         if (action === "zoom-in") dashboardRangeMonths = Math.max(1, Math.round(dashboardRangeMonths / 2));
         if (action === "zoom-out") dashboardRangeMonths = Math.min(60, dashboardRangeMonths * 2);
         if (action === "previous") dashboardRangeOffset -= Math.max(1, Math.round(dashboardRangeMonths / 2));
         if (action === "next") dashboardRangeOffset += Math.max(1, Math.round(dashboardRangeMonths / 2));
         if (action === "reset") {
-          dashboardRangeMonths = 6;
+          dashboardRangeMonths = 9;
           dashboardRangeOffset = 0;
         }
-        renderTimeline();
+        if (scope === "dashboard") renderTimeline();
+        else renderLocationDetailPage();
         return;
       }
 
@@ -883,6 +1323,10 @@ function formatTimelineSpan(range) {
 function timelinePosition(dateString, start, end) {
   if (!dateString) return -1;
   const eventDate = startOfDay(new Date(`${dateString}T00:00:00`));
+  return timelinePositionFromDate(eventDate, start, end);
+}
+
+function timelinePositionFromDate(eventDate, start, end) {
   const span = end - start;
   return Math.round(((eventDate - start) / span) * 1000) / 10;
 }
@@ -915,6 +1359,10 @@ function groupByLocation(systems) {
 
 function getCurrentSystem() {
   return state.systems.find((system) => system.id === initialSystemId) || state.systems[0];
+}
+
+function getCurrentLocation() {
+  return state.locations.find((location) => location.name === initialLocation) || null;
 }
 
 function statusPill(status) {

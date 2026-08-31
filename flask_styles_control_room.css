@@ -1,0 +1,113 @@
+@import url("/assets/flask_styles.css");
+
+:root {
+  color-scheme: dark;
+  --bg: #242a2d;
+  --surface: #30373a;
+  --surface-alt: #38413d;
+  --text: #edf3ef;
+  --muted: #b3c0ba;
+  --line: #566267;
+  --blue: #45b97c;
+  --green: #65d89a;
+  --amber: #ffbd45;
+  --red: #ff625c;
+  --cyan: #4cc2d6;
+  --shadow: 0 10px 28px rgba(0, 0, 0, 0.22);
+}
+
+body {
+  background: #242a2d;
+}
+
+.topbar {
+  border-bottom: 2px solid #45b97c;
+  background: #1c2326;
+}
+
+.brand-mark {
+  border: 1px solid #ffbd45;
+  background: #343d40;
+  color: #ffbd45;
+}
+
+.topbar .nav-tab.active {
+  border-color: #45b97c;
+  background: #45b97c;
+  color: #07120c;
+}
+
+.primary-button,
+.filter-button.active {
+  background: #45b97c;
+  color: #07120c;
+}
+
+.secondary-button,
+.timeline-control,
+.filter-button,
+input,
+select,
+textarea,
+.checkbox-option {
+  border-color: #637075;
+  background: #394145;
+  color: #edf3ef;
+}
+
+.metric,
+.location-group,
+.system-detail-hero,
+.detail-section,
+.location-hero,
+.admin-section,
+.theme-option,
+.location-system-item,
+.repeat-item,
+.admin-system-row,
+dialog {
+  border-color: #566267;
+  background: #30373a;
+}
+
+.timeline-row:hover,
+.timeline-row.selected,
+.task-item,
+.record-item,
+.issue-item,
+.info-cell,
+.panel-block {
+  background: #394145;
+}
+
+.timeline-track {
+  background-color: #414b4f;
+}
+
+.timeline-marker {
+  border-color: #242a2d;
+}
+
+.tag,
+.status-history-item {
+  border-color: #566267;
+  background: #3b4448;
+  color: #dce7e1;
+}
+
+.danger-button {
+  border: 1px solid #793d3b;
+  background: #362120;
+  color: #ff8b86;
+}
+
+.eyebrow,
+.metric span,
+.timeline-scale,
+.record-filter > span {
+  color: #7fd6a4;
+}
+
+.theme-swatches {
+  border-color: #566166;
+}

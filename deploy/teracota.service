@@ -1,0 +1,25 @@
+[Unit]
+Description=TeraCota operations tracker
+After=network.target
+
+[Service]
+Type=simple
+User=teracota
+Group=teracota
+WorkingDirectory=/opt/teracota
+EnvironmentFile=/opt/teracota/.env
+Environment=PYTHONDONTWRITEBYTECODE=1
+ExecStart=/opt/teracota/.venv/bin/gunicorn --config /opt/teracota/gunicorn.conf.py wsgi:application
+Restart=on-failure
+RestartSec=5
+TimeoutStopSec=30
+UMask=0027
+NoNewPrivileges=true
+PrivateDevices=true
+PrivateTmp=true
+ProtectHome=true
+ProtectSystem=full
+ReadWritePaths=/var/lib/teracota
+
+[Install]
+WantedBy=multi-user.target

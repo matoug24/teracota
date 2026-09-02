@@ -1,8 +1,11 @@
 from datetime import date
+import hmac
 import os
 import sqlite3
+from urllib.parse import urlsplit
 
-from flask import Flask, abort, jsonify, render_template, request, session
+from flask import Flask, abort, jsonify, redirect, render_template, request, send_from_directory, session, url_for
+from werkzeug.middleware.proxy_fix import ProxyFix
 
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
@@ -11,22 +14,55 @@ DATABASE = os.environ.get(
     os.path.join(BASE_DIR, "teracota.sqlite3"),
 )
 
-app = Flask(__name__, template_folder=BASE_DIR, static_folder=BASE_DIR, static_url_path="/assets")
-app.secret_key = os.environ.get("TERACOTA_SECRET_KEY", "teracota-local-session-key")
 
-LOGIN_USERNAME = "teraview"
-LOGIN_PASSWORD = "pythagorus"
+def env_flag(name, default=False):
+    value = os.environ.get(name)
+    if value is None:
+        return default
+    return value.strip().lower() in ("1", "true", "yes", "on")
+
+
+PRODUCTION = os.environ.get("TERACOTA_ENV", "development").strip().lower() == "production"
+DEFAULT_SECRET_KEY = "teracota-local-session-key"
+DEFAULT_PASSWORD = "pythagorus"
+
+app = Flask(__name__, template_folder=BASE_DIR, static_folder=None)
+app.config.update(
+    SECRET_KEY=os.environ.get("TERACOTA_SECRET_KEY", DEFAULT_SECRET_KEY),
+    MAX_CONTENT_LENGTH=1024 * 1024,
+    SESSION_COOKIE_HTTPONLY=True,
+    SESSION_COOKIE_SAMESITE="Lax",
+    SESSION_COOKIE_SECURE=env_flag("TERACOTA_COOKIE_SECURE", PRODUCTION),
+)
+if env_flag("TERACOTA_BEHIND_PROXY"):
+    app.wsgi_app = ProxyFix(app.wsgi_app, x_for=1, x_proto=1, x_host=1)
+
+LOGIN_USERNAME = os.environ.get("TERACOTA_USERNAME", "teraview")
+LOGIN_PASSWORD = os.environ.get("TERACOTA_PASSWORD", DEFAULT_PASSWORD)
+if PRODUCTION and app.config["SECRET_KEY"] == DEFAULT_SECRET_KEY:
+    raise RuntimeError("TERACOTA_SECRET_KEY must be set in production")
+if PRODUCTION and LOGIN_PASSWORD == DEFAULT_PASSWORD:
+    raise RuntimeError("TERACOTA_PASSWORD must be changed in production")
 THEME_FILES = {
     "standard": "flask_styles.css",
     "control-room": "flask_styles_control_room.css",
     "instrument": "flask_styles_instrument.css",
 }
+APP_ASSETS = {
+    "flask_app_v3.js",
+    "flask_styles.css",
+    "flask_styles_control_room.css",
+    "flask_styles_instrument.css",
+}
 
 
 def get_db():
-    os.makedirs(os.path.dirname(DATABASE), exist_ok=True)
-    connection = sqlite3.connect(DATABASE)
+    database_path = os.path.abspath(DATABASE)
+    os.makedirs(os.path.dirname(database_path), exist_ok=True)
+    connection = sqlite3.connect(database_path, timeout=30)
     connection.row_factory = sqlite3.Row
+    connection.execute("PRAGMA foreign_keys = ON")
+    connection.execute("PRAGMA busy_timeout = 30000")
     return connection
 
 
@@ -55,6 +91,7 @@ def ensure_column(table, column, definition):
 
 
 def init_db():
+    execute("PRAGMA journal_mode = WAL")
     execute(
         """
         CREATE TABLE IF NOT EXISTS systems (
@@ -152,7 +189,8 @@ def init_db():
         )
         """
     )
-    seed_db()
+    if env_flag("TERACOTA_SEED_DEMO", not PRODUCTION):
+        seed_db()
     sync_locations()
     backfill_status_history()
     execute("INSERT OR IGNORE INTO app_settings (key, value) VALUES ('theme', 'standard')")
@@ -302,6 +340,7 @@ def load_state():
     locations = query_all("SELECT * FROM locations ORDER BY name")
     return {
         "authenticated": is_authenticated(),
+        "username": LOGIN_USERNAME if is_authenticated() else "",
         "systems": systems,
         "tasks": tasks,
         "locations": locations,
@@ -327,6 +366,25 @@ def is_authenticated():
 def require_login():
     if not is_authenticated():
         abort(401)
+
+
+def safe_next_url(value):
+    value = clean(value, "/")
+    parsed = urlsplit(value)
+    if parsed.scheme or parsed.netloc or not value.startswith("/"):
+        return "/"
+    return value
+
+
+@app.before_request
+def enforce_authentication():
+    public_endpoints = {"login_page", "login", "health_check"}
+    if is_authenticated() or request.endpoint in public_endpoints:
+        return None
+    if request.path.startswith("/api/"):
+        return jsonify({"message": "Authentication required"}), 401
+    next_url = request.full_path.rstrip("?")
+    return redirect(url_for("login_page", next=next_url))
 
 
 def clean_categories(value):
@@ -443,6 +501,13 @@ def render_page(page, system_id="", location=""):
     )
 
 
+@app.route("/assets/<path:filename>")
+def app_asset(filename):
+    if filename not in APP_ASSETS:
+        abort(404)
+    return send_from_directory(BASE_DIR, filename)
+
+
 def sync_locations():
     for row in query_all("SELECT DISTINCT location FROM systems WHERE location <> ''"):
         execute("INSERT OR IGNORE INTO locations (name, contacts, notes) VALUES (?, '', '')", (row["location"],))
@@ -516,9 +581,39 @@ def admin_page():
     return render_page("admin")
 
 
+@app.route("/login", methods=["GET", "POST"])
+def login_page():
+    next_url = safe_next_url(request.values.get("next"))
+    if is_authenticated():
+        return redirect(next_url)
+
+    error = ""
+    status = 200
+    if request.method == "POST":
+        username = clean(request.form.get("username"))
+        password = clean(request.form.get("password"))
+        if hmac.compare_digest(username, LOGIN_USERNAME) and hmac.compare_digest(password, LOGIN_PASSWORD):
+            session.clear()
+            session["logged_in"] = True
+            return redirect(next_url)
+        error = "Invalid username or password."
+        status = 401
+
+    return render_template("login.html", error=error, next_url=next_url), status
+
+
 @app.route("/api/state")
 def api_state():
     return jsonify(load_state())
+
+
+@app.route("/healthz")
+def health_check():
+    try:
+        query_one("SELECT 1 AS healthy")
+    except sqlite3.Error:
+        return jsonify({"status": "unhealthy"}), 503
+    return jsonify({"status": "ok"})
 
 
 @app.route("/api/login", methods=["POST"])
@@ -526,7 +621,7 @@ def login():
     payload = request.get_json(force=True)
     username = clean(payload.get("username"))
     password = clean(payload.get("password"))
-    if username == LOGIN_USERNAME and password == LOGIN_PASSWORD:
+    if hmac.compare_digest(username, LOGIN_USERNAME) and hmac.compare_digest(password, LOGIN_PASSWORD):
         session["logged_in"] = True
         return jsonify(load_state())
     return jsonify({"message": "Invalid username or password"}), 401
@@ -535,7 +630,7 @@ def login():
 @app.route("/api/logout", methods=["POST"])
 def logout():
     session.clear()
-    return jsonify(load_state())
+    return jsonify({"authenticated": False})
 
 
 @app.route("/api/systems", methods=["POST"])

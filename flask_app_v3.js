@@ -77,6 +77,10 @@ loadState();
 
 async function loadState() {
   const response = await fetch("/api/state");
+  if (response.status === 401) {
+    redirectToLogin();
+    return;
+  }
   state = await response.json();
   if (pageMode === "home" && window.location.hash === "#development") {
     activeView = "development";
@@ -91,7 +95,10 @@ async function sendJson(url, options) {
   });
   const payload = await response.json().catch(() => ({}));
   if (!response.ok) {
-    if (response.status === 401) showLogin();
+    if (response.status === 401) {
+      redirectToLogin();
+      return;
+    }
     throw new Error(payload.message || `Unable to complete the request (${response.status}).`);
   }
   state = payload;
@@ -150,33 +157,28 @@ function applyTheme() {
 function renderAuth() {
   if (state.authenticated) {
     authArea.innerHTML = `
-      <span class="auth-label">teraview</span>
+      <span class="auth-label">${escapeHtml(state.username || "Signed in")}</span>
       <button class="secondary-button auth-button" id="logoutButton" type="button">Log out</button>
     `;
     document.querySelector("#logoutButton").addEventListener("click", logout);
     return;
   }
 
-  authArea.innerHTML = `
-    <button class="secondary-button auth-button" id="loginButton" type="button">Log in</button>
-  `;
-  document.querySelector("#loginButton").addEventListener("click", showLogin);
+  redirectToLogin();
 }
 
-function showLogin() {
-  dialogMode = "login";
-  editingItem = null;
-  dialogTitle.textContent = "Log in";
-  saveDialogButton.textContent = "Log in";
-  dialogFields.innerHTML = [
-    field("username", "Username", "text", ""),
-    field("password", "Password", "password", ""),
-  ].map(renderField).join("");
-  entryDialog.showModal();
+function redirectToLogin() {
+  const next = `${window.location.pathname}${window.location.search}${window.location.hash}`;
+  window.location.href = `/login?next=${encodeURIComponent(next)}`;
 }
 
 async function logout() {
-  await sendJson("/api/logout", { method: "POST", body: "{}" });
+  await fetch("/api/logout", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: "{}",
+  });
+  window.location.href = "/login";
 }
 
 function setEditVisibility() {
@@ -523,14 +525,7 @@ function renderAdminPage() {
   setSystemsNavActive();
 
   if (!state.authenticated) {
-    adminPage.innerHTML = `
-      <div class="section-header"><div><p class="eyebrow">Restricted tools</p><h2>Administration</h2></div></div>
-      <div class="empty-card admin-login-card">
-        <div><h3>Administrator login required</h3><p>Log in to manage systems and change the application style.</p></div>
-        <button class="primary-button" id="adminLoginButton" type="button">Log in</button>
-      </div>
-    `;
-    document.querySelector("#adminLoginButton").addEventListener("click", showLogin);
+    redirectToLogin();
     return;
   }
 
@@ -748,10 +743,6 @@ function openDialog(mode, item = null) {
   editingItem = item;
   const system = getCurrentSystem();
   const configs = {
-    login: {
-      title: "Log in",
-      fields: [field("username", "Username", "text", ""), field("password", "Password", "password", "")],
-    },
     system: { title: "Add System", fields: systemFields() },
     editSystem: { title: "Edit System", fields: systemFields(item || system) },
     editStatusHistory: { title: "Edit Status Event", fields: statusHistoryFields(item) },
@@ -791,7 +782,7 @@ function openDialog(mode, item = null) {
   };
 
   dialogTitle.textContent = configs[mode].title;
-  saveDialogButton.textContent = mode === "login" ? "Log in" : "Save";
+  saveDialogButton.textContent = "Save";
   dialogFields.innerHTML = configs[mode].fields.map(renderField).join("");
   if (mode === "editSystem") {
     dialogFields.insertAdjacentHTML("beforeend", renderStatusHistoryManager(item || system));
@@ -806,10 +797,6 @@ async function saveDialog() {
   const targetSystem = dialogMode === "editSystem" ? editingItem || system : system;
 
   try {
-    if (dialogMode === "login") {
-      await sendJson("/api/login", { method: "POST", body: JSON.stringify(data) });
-    }
-
     if (dialogMode === "system") {
       const oldIds = new Set(state.systems.map((item) => item.id));
       await sendJson("/api/systems", { method: "POST", body: JSON.stringify(data) });
@@ -865,7 +852,7 @@ async function saveDialog() {
       await sendJson(`/api/tasks/${editingItem.id}`, { method: "PUT", body: JSON.stringify(data) });
     }
   } catch (error) {
-    showFormError(dialogMode === "login" ? "Invalid username or password." : error.message);
+    showFormError(error.message);
     return;
   }
 

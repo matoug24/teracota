@@ -340,7 +340,9 @@ Open the final site:
 https://teracota.matoug.com/
 ```
 
-Log in using `TERACOTA_USERNAME` and `TERACOTA_PASSWORD` from the protected environment file.
+Log in using `TERACOTA_USERNAME` and `TERACOTA_PASSWORD` from the protected environment file. The unlinked `/logs` page shows recent visitor IP, device, browser, platform, and page information.
+
+The admin page can export a portable CSV containing all application data except visitor logs. Its restore control replaces application data from that CSV while retaining the server's existing visitor logs. Keep exported CSV files protected because they contain operational records and deleted-item recovery data.
 
 ## 13. Verify the deployment
 
@@ -359,7 +361,7 @@ sudo nginx -t
 Then verify in a browser:
 
 1. The address begins with `https://` and shows a valid certificate.
-2. Opening `/`, a system URL, a location URL, or `/admin` while signed out redirects to `/login`.
+2. Opening `/`, a system URL, a location URL, `/admin`, or `/logs` while signed out redirects to `/login`.
 3. The dashboard is not visible until the username and password are accepted.
 4. The unauthenticated `/api/state` request returns HTTP `401` without operational data.
 5. Login works and returns to the originally requested page.
@@ -481,7 +483,47 @@ curl -v http://127.0.0.1:8000/healthz
 
 **Application refuses to start**
 
-Check `/opt/teracota/.env`. Production requires a new password and a random secret key.
+If the journal reports `TERACOTA_PASSWORD must be changed in production`, the
+environment file is being read but the password is missing, misspelled, or still
+set to `pythagorus`. Stop the restart loop and edit the protected server file:
+
+```bash
+sudo systemctl stop teracota
+sudo nano /opt/teracota/.env
+```
+
+Make sure the file contains the exact variable names below, with no `export`
+prefix and no spaces around `=`. Replace both example values with real secrets:
+
+```text
+TERACOTA_ENV=production
+TERACOTA_SECRET_KEY=YOUR_RANDOM_64_CHARACTER_SECRET
+TERACOTA_USERNAME=teraview
+TERACOTA_PASSWORD="YOUR_NEW_LOGIN_PASSWORD"
+TERACOTA_DB_PATH=/var/lib/teracota/teracota.sqlite3
+TERACOTA_BEHIND_PROXY=true
+TERACOTA_COOKIE_SECURE=true
+TERACOTA_SEED_DEMO=false
+```
+
+Confirm the required entries exist without displaying their values:
+
+```bash
+sudo sed -n 's/^\(TERACOTA_[A-Z_]*\)=.*/\1=<set>/p' /opt/teracota/.env
+```
+
+Restore the expected ownership and permissions, then restart and verify the app:
+
+```bash
+sudo chown root:teracota /opt/teracota/.env
+sudo chmod 0640 /opt/teracota/.env
+sudo systemctl restart teracota
+sudo systemctl status teracota --no-pager
+curl -fsS http://127.0.0.1:8000/healthz
+```
+
+The health check should return `{"status":"ok"}`. If startup still fails, run
+`sudo journalctl -u teracota -n 50 --no-pager` and resolve the newest error.
 
 **Database is read-only**
 
@@ -505,7 +547,7 @@ Confirm `teracota.matoug.com` resolves to the Lightsail Static IP and that TCP p
 - Keep HTTPS enabled because login uses a session cookie.
 - Only `/login` and `/healthz` are intentionally public; all application pages, data APIs, and application assets require a session.
 - Take regular off-server backups.
-- The current app has one shared administrative login. For a larger user base, add individual accounts, roles, audit logging, and stronger login protection before expanding access.
+- The current app has one shared administrative login. For a larger user base, add individual accounts, roles, per-user audit identity, and stronger login protection before expanding access.
 
 ## Official references
 

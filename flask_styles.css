@@ -1148,7 +1148,8 @@ dialog::backdrop {
 }
 
 .location-detail-page,
-.admin-page {
+.admin-page,
+.logs-page {
   display: grid;
   gap: 20px;
 }
@@ -1261,6 +1262,137 @@ dialog::backdrop {
   align-items: center;
   justify-content: space-between;
   gap: 12px;
+}
+
+.admin-data-actions {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 10px;
+}
+
+.admin-help {
+  margin: -4px 0 0;
+}
+
+.hidden-file-input {
+  display: none;
+}
+
+.deleted-record-list {
+  display: grid;
+  gap: 8px;
+}
+
+.deleted-record-row,
+.admin-empty-state {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  border: 1px solid var(--line);
+  border-radius: 7px;
+  background: var(--surface);
+  padding: 12px;
+}
+
+.deleted-record-copy,
+.admin-empty-state {
+  min-width: 0;
+}
+
+.deleted-record-copy {
+  display: grid;
+  grid-template-columns: max-content minmax(0, 1fr);
+  align-items: center;
+  gap: 4px 9px;
+}
+
+.deleted-record-copy strong {
+  overflow-wrap: anywhere;
+}
+
+.deleted-record-copy small {
+  grid-column: 2;
+  color: var(--muted);
+}
+
+.admin-empty-state {
+  align-items: flex-start;
+  flex-direction: column;
+  color: var(--muted);
+}
+
+.logs-table-wrap {
+  width: 100%;
+  overflow-x: auto;
+  border: 1px solid var(--line);
+  border-radius: 7px;
+}
+
+.logs-table {
+  width: 100%;
+  min-width: 880px;
+  border-collapse: collapse;
+  text-align: left;
+}
+
+.logs-table th,
+.logs-table td {
+  border-bottom: 1px solid var(--line);
+  padding: 11px 12px;
+  vertical-align: top;
+}
+
+.logs-table th {
+  background: var(--surface-alt);
+  color: var(--muted);
+  font-size: 0.72rem;
+  text-transform: uppercase;
+}
+
+.logs-table tbody tr:last-child td {
+  border-bottom: 0;
+}
+
+.logs-table td:nth-child(3),
+.logs-table td:nth-child(4) {
+  display: table-cell;
+}
+
+.logs-table td strong,
+.logs-table td span,
+.logs-table td code {
+  display: block;
+}
+
+.logs-table td span,
+.logs-table details {
+  margin-top: 3px;
+  color: var(--muted);
+  font-size: 0.78rem;
+}
+
+.logs-table td .tag {
+  display: inline-flex;
+  margin: 0 0 5px;
+}
+
+.logs-table code,
+.logs-table details p {
+  max-width: 340px;
+  margin: 4px 0 0;
+  overflow-wrap: anywhere;
+  white-space: normal;
+}
+
+.logs-table summary {
+  cursor: pointer;
+}
+
+.logs-loading {
+  color: var(--muted);
+  padding: 16px 0;
 }
 
 .theme-grid {
@@ -1603,9 +1735,18 @@ button.task-item:hover {
   }
 
   .admin-system-row,
-  .location-system-item {
+  .location-system-item,
+  .deleted-record-row {
     align-items: flex-start;
     flex-direction: column;
+  }
+
+  .deleted-record-copy {
+    grid-template-columns: 1fr;
+  }
+
+  .deleted-record-copy small {
+    grid-column: 1;
   }
 
   .site-visit-system-row {

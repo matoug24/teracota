@@ -1,10 +1,13 @@
-from datetime import date
+import csv
+from datetime import date, datetime, timezone
 import hmac
+import io
+import json
 import os
 import sqlite3
 from urllib.parse import urlsplit
 
-from flask import Flask, abort, jsonify, redirect, render_template, request, send_from_directory, session, url_for
+from flask import Flask, Response, abort, jsonify, redirect, render_template, request, send_from_directory, session, url_for
 from werkzeug.middleware.proxy_fix import ProxyFix
 
 
@@ -29,7 +32,7 @@ DEFAULT_PASSWORD = "pythagorus"
 app = Flask(__name__, template_folder=BASE_DIR, static_folder=None)
 app.config.update(
     SECRET_KEY=os.environ.get("TERACOTA_SECRET_KEY", DEFAULT_SECRET_KEY),
-    MAX_CONTENT_LENGTH=1024 * 1024,
+    MAX_CONTENT_LENGTH=10 * 1024 * 1024,
     SESSION_COOKIE_HTTPONLY=True,
     SESSION_COOKIE_SAMESITE="Lax",
     SESSION_COOKIE_SECURE=env_flag("TERACOTA_COOKIE_SECURE", PRODUCTION),
@@ -54,6 +57,17 @@ APP_ASSETS = {
     "flask_styles_control_room.css",
     "flask_styles_instrument.css",
 }
+EXPORT_TABLES = (
+    "systems",
+    "site_visits",
+    "maintenance_records",
+    "system_issues",
+    "development_tasks",
+    "system_status_history",
+    "locations",
+    "app_settings",
+    "deleted_items",
+)
 
 
 def get_db():
@@ -189,6 +203,37 @@ def init_db():
         )
         """
     )
+    execute(
+        """
+        CREATE TABLE IF NOT EXISTS deleted_items (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            item_type TEXT NOT NULL,
+            original_id INTEGER,
+            label TEXT NOT NULL,
+            payload TEXT NOT NULL,
+            deleted_at TEXT NOT NULL,
+            deleted_by TEXT NOT NULL
+        )
+        """
+    )
+    execute(
+        """
+        CREATE TABLE IF NOT EXISTS visitor_logs (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            visited_at TEXT NOT NULL,
+            ip_address TEXT NOT NULL,
+            method TEXT NOT NULL,
+            path TEXT NOT NULL,
+            device TEXT NOT NULL,
+            browser TEXT NOT NULL,
+            platform TEXT NOT NULL,
+            user_agent TEXT NOT NULL,
+            username TEXT NOT NULL
+        )
+        """
+    )
+    execute("CREATE INDEX IF NOT EXISTS idx_deleted_items_deleted_at ON deleted_items (deleted_at DESC)")
+    execute("CREATE INDEX IF NOT EXISTS idx_visitor_logs_visited_at ON visitor_logs (visited_at DESC)")
     if env_flag("TERACOTA_SEED_DEMO", not PRODUCTION):
         seed_db()
     sync_locations()
@@ -325,6 +370,8 @@ def load_state():
             "SELECT * FROM maintenance_records WHERE system_id = ? ORDER BY date DESC, id DESC",
             (system["id"],),
         )
+        for record in system["maintenance"]:
+            record["type"] = clean_categories(record["type"])
         system["issues"] = query_all(
             "SELECT * FROM system_issues WHERE system_id = ? ORDER BY opened DESC, id DESC",
             (system["id"],),
@@ -338,12 +385,20 @@ def load_state():
 
     tasks = query_all("SELECT * FROM development_tasks ORDER BY category, created_at DESC, id DESC")
     locations = query_all("SELECT * FROM locations ORDER BY name")
+    deleted_items = query_all(
+        """
+        SELECT id, item_type, original_id, label, deleted_at, deleted_by
+        FROM deleted_items
+        ORDER BY deleted_at DESC, id DESC
+        """
+    )
     return {
         "authenticated": is_authenticated(),
         "username": LOGIN_USERNAME if is_authenticated() else "",
         "systems": systems,
         "tasks": tasks,
         "locations": locations,
+        "deleted_items": deleted_items,
         "theme": get_active_theme(),
     }
 
@@ -357,6 +412,10 @@ def clean(value, default=""):
 
 def today_iso():
     return date.today().isoformat()
+
+
+def utc_now_iso():
+    return datetime.now(timezone.utc).isoformat(timespec="seconds").replace("+00:00", "Z")
 
 
 def is_authenticated():
@@ -387,13 +446,90 @@ def enforce_authentication():
     return redirect(url_for("login_page", next=next_url))
 
 
+def visitor_details(user_agent):
+    value = (user_agent or "").lower()
+    if "ipad" in value or "tablet" in value:
+        device = "Tablet"
+    elif any(token in value for token in ("mobile", "iphone", "android")):
+        device = "Mobile"
+    elif any(token in value for token in ("curl", "wget", "python-requests")):
+        device = "Automated client"
+    else:
+        device = "Desktop"
+
+    if "edg/" in value:
+        browser = "Edge"
+    elif "chrome/" in value or "crios/" in value:
+        browser = "Chrome"
+    elif "firefox/" in value or "fxios/" in value:
+        browser = "Firefox"
+    elif "safari/" in value:
+        browser = "Safari"
+    elif "curl/" in value:
+        browser = "curl"
+    else:
+        browser = "Other"
+
+    if "windows" in value:
+        platform = "Windows"
+    elif "android" in value:
+        platform = "Android"
+    elif any(token in value for token in ("iphone", "ipad", "ios")):
+        platform = "iOS"
+    elif any(token in value for token in ("macintosh", "mac os")):
+        platform = "macOS"
+    elif "linux" in value:
+        platform = "Linux"
+    else:
+        platform = "Other"
+    return device, browser, platform
+
+
+@app.before_request
+def record_page_visit():
+    page_endpoints = {
+        "index",
+        "system_detail",
+        "location_detail",
+        "admin_page",
+        "logs_page",
+        "login_page",
+    }
+    if request.method != "GET" or request.endpoint not in page_endpoints:
+        return None
+    user_agent = request.headers.get("User-Agent", "")
+    device, browser, platform = visitor_details(user_agent)
+    try:
+        execute(
+            """
+            INSERT INTO visitor_logs
+                (visited_at, ip_address, method, path, device, browser, platform, user_agent, username)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                utc_now_iso(),
+                request.remote_addr or "Unknown",
+                request.method,
+                request.full_path.rstrip("?"),
+                device,
+                browser,
+                platform,
+                user_agent,
+                LOGIN_USERNAME if is_authenticated() else "Unauthenticated",
+            ),
+        )
+    except sqlite3.Error:
+        app.logger.exception("Unable to record visitor log")
+    return None
+
+
 def clean_categories(value):
     allowed = ["Calibration", "Optics", "Commissioning", "Electronics"]
     if isinstance(value, list):
         selected = [item for item in value if item in allowed]
     else:
         selected = [item.strip() for item in str(value or "").split(",") if item.strip() in allowed]
-    return ", ".join(selected) if selected else "Calibration"
+    return ", ".join(selected) if selected else "Unknown Reason"
 
 
 def clean_system_ids(value):
@@ -426,6 +562,82 @@ def delete_site_visit_if_empty(visit_id):
     remaining = query_one("SELECT id FROM maintenance_records WHERE visit_id = ? LIMIT 1", (visit_id,))
     if not remaining:
         execute("DELETE FROM site_visits WHERE id = ?", (visit_id,))
+
+
+def archive_deleted_item(db, item_type, original_id, label, payload):
+    db.execute(
+        """
+        INSERT INTO deleted_items
+            (item_type, original_id, label, payload, deleted_at, deleted_by)
+        VALUES (?, ?, ?, ?, ?, ?)
+        """,
+        (
+            item_type,
+            original_id,
+            label,
+            json.dumps(payload, separators=(",", ":"), ensure_ascii=True),
+            utc_now_iso(),
+            LOGIN_USERNAME,
+        ),
+    )
+
+
+def insert_database_row(db, table, row):
+    allowed_columns = {column["name"] for column in db.execute(f"PRAGMA table_info({table})").fetchall()}
+    values = {key: value for key, value in row.items() if key in allowed_columns}
+    if "id" in values and db.execute(f"SELECT 1 FROM {table} WHERE id = ?", (values["id"],)).fetchone():
+        values.pop("id")
+    columns = list(values)
+    placeholders = ", ".join("?" for _ in columns)
+    cursor = db.execute(
+        f"INSERT INTO {table} ({', '.join(columns)}) VALUES ({placeholders})",
+        tuple(values[column] for column in columns),
+    )
+    return cursor.lastrowid
+
+
+def restore_deleted_record(db, deleted_item):
+    try:
+        payload = json.loads(deleted_item["payload"])
+    except (TypeError, json.JSONDecodeError):
+        return None, "The archived record is damaged and cannot be restored"
+
+    item_type = deleted_item["item_type"]
+    if item_type == "issue":
+        issue = payload.get("issue")
+        if not isinstance(issue, dict):
+            return None, "The archived issue is incomplete"
+        if not db.execute("SELECT 1 FROM systems WHERE id = ?", (issue.get("system_id"),)).fetchone():
+            return None, "Restore the related system before restoring this issue"
+        insert_database_row(db, "system_issues", issue)
+        return [], None
+
+    if item_type not in ("visit", "site_visit"):
+        return None, "This archived record type cannot be restored"
+
+    records = payload.get("records")
+    if not isinstance(records, list) or not records:
+        return None, "The archived visit is incomplete"
+    system_ids = {record.get("system_id") for record in records if isinstance(record, dict)}
+    if None in system_ids or any(
+        not db.execute("SELECT 1 FROM systems WHERE id = ?", (system_id,)).fetchone()
+        for system_id in system_ids
+    ):
+        return None, "Restore the related system before restoring this visit"
+
+    site_visit = payload.get("site_visit")
+    restored_visit_id = None
+    if isinstance(site_visit, dict):
+        original_visit_id = site_visit.get("id")
+        existing = db.execute("SELECT id FROM site_visits WHERE id = ?", (original_visit_id,)).fetchone()
+        restored_visit_id = existing["id"] if existing else insert_database_row(db, "site_visits", site_visit)
+
+    for record in records:
+        record = dict(record)
+        if record.get("visit_id") is not None:
+            record["visit_id"] = restored_visit_id
+        insert_database_row(db, "maintenance_records", record)
+    return sorted(system_ids), None
 
 
 def create_grouped_site_visit(payload, fallback_system_id=None):
@@ -581,6 +793,11 @@ def admin_page():
     return render_page("admin")
 
 
+@app.route("/logs")
+def logs_page():
+    return render_page("logs")
+
+
 @app.route("/login", methods=["GET", "POST"])
 def login_page():
     next_url = safe_next_url(request.values.get("next"))
@@ -607,6 +824,21 @@ def api_state():
     return jsonify(load_state())
 
 
+@app.route("/api/logs")
+def api_logs():
+    require_login()
+    try:
+        limit = min(max(int(request.args.get("limit", 500)), 1), 2000)
+    except ValueError:
+        limit = 500
+    total = query_one("SELECT COUNT(*) AS total FROM visitor_logs")["total"]
+    logs = query_all(
+        "SELECT * FROM visitor_logs ORDER BY visited_at DESC, id DESC LIMIT ?",
+        (limit,),
+    )
+    return jsonify({"logs": logs, "total": total, "limit": limit})
+
+
 @app.route("/healthz")
 def health_check():
     try:
@@ -631,6 +863,131 @@ def login():
 def logout():
     session.clear()
     return jsonify({"authenticated": False})
+
+
+@app.route("/api/admin/export.csv")
+def export_database_csv():
+    require_login()
+    output = io.StringIO(newline="")
+    writer = csv.DictWriter(output, fieldnames=("record_type", "table", "data_json"))
+    writer.writeheader()
+    for table in EXPORT_TABLES:
+        writer.writerow({"record_type": "table", "table": table, "data_json": ""})
+        for row in query_all(f"SELECT * FROM {table}"):
+            writer.writerow(
+                {
+                    "record_type": "row",
+                    "table": table,
+                    "data_json": json.dumps(row, separators=(",", ":"), ensure_ascii=True),
+                }
+            )
+    filename = f"teracota-backup-{today_iso()}.csv"
+    return Response(
+        output.getvalue(),
+        mimetype="text/csv",
+        headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+    )
+
+
+@app.route("/api/admin/import", methods=["POST"])
+def import_database_csv():
+    require_login()
+    upload = request.files.get("file")
+    if not upload or not upload.filename:
+        return jsonify({"message": "Select a TeraCota CSV backup file"}), 400
+    try:
+        text = upload.read().decode("utf-8-sig")
+    except UnicodeDecodeError:
+        return jsonify({"message": "The backup must be a UTF-8 CSV file"}), 400
+
+    reader = csv.DictReader(io.StringIO(text))
+    required_headers = {"record_type", "table", "data_json"}
+    if not reader.fieldnames or not required_headers.issubset(reader.fieldnames):
+        return jsonify({"message": "This is not a valid TeraCota CSV backup"}), 400
+
+    rows_by_table = {table: [] for table in EXPORT_TABLES}
+    table_markers = set()
+    try:
+        for csv_row in reader:
+            table = clean(csv_row.get("table"))
+            record_type = clean(csv_row.get("record_type"))
+            if table not in rows_by_table:
+                raise ValueError(f"Unknown backup table: {table or 'blank'}")
+            if record_type == "table":
+                table_markers.add(table)
+                continue
+            if record_type != "row":
+                raise ValueError("Unknown backup record type")
+            data = json.loads(csv_row.get("data_json") or "")
+            if not isinstance(data, dict):
+                raise ValueError("Backup row data must be an object")
+            rows_by_table[table].append(data)
+    except (json.JSONDecodeError, ValueError) as error:
+        return jsonify({"message": f"Invalid backup: {error}"}), 400
+
+    missing_tables = set(EXPORT_TABLES) - table_markers
+    if missing_tables:
+        return jsonify(
+            {"message": f"Backup is missing table markers: {', '.join(sorted(missing_tables))}"}
+        ), 400
+
+    db = get_db()
+    try:
+        db.execute("BEGIN IMMEDIATE")
+        table_columns = {
+            table: {column["name"] for column in db.execute(f"PRAGMA table_info({table})").fetchall()}
+            for table in EXPORT_TABLES
+        }
+        for table in EXPORT_TABLES:
+            for row in rows_by_table[table]:
+                unknown_columns = set(row) - table_columns[table]
+                if unknown_columns:
+                    raise ValueError(
+                        f"Table {table} has unknown columns: {', '.join(sorted(unknown_columns))}"
+                    )
+        for table in reversed(EXPORT_TABLES):
+            db.execute(f"DELETE FROM {table}")
+        imported_rows = 0
+        for table in EXPORT_TABLES:
+            for row in rows_by_table[table]:
+                insert_database_row(db, table, row)
+                imported_rows += 1
+        db.commit()
+    except (sqlite3.Error, ValueError) as error:
+        db.rollback()
+        return jsonify({"message": f"Unable to restore backup: {error}"}), 400
+    finally:
+        db.close()
+
+    sync_locations()
+    backfill_status_history()
+    return jsonify({"imported_rows": imported_rows, **load_state()})
+
+
+@app.route("/api/admin/deleted-items/<int:item_id>/restore", methods=["POST"])
+def restore_deleted_item(item_id):
+    require_login()
+    with get_db() as db:
+        deleted_item = db.execute("SELECT * FROM deleted_items WHERE id = ?", (item_id,)).fetchone()
+        if not deleted_item:
+            abort(404)
+        affected_systems, error = restore_deleted_record(db, deleted_item)
+        if error:
+            return jsonify({"message": error}), 400
+        db.execute("DELETE FROM deleted_items WHERE id = ?", (item_id,))
+        db.commit()
+    for system_id in affected_systems:
+        refresh_last_visit(system_id)
+    return jsonify(load_state())
+
+
+@app.route("/api/admin/deleted-items/<int:item_id>", methods=["DELETE"])
+def permanently_delete_item(item_id):
+    require_login()
+    if not query_one("SELECT id FROM deleted_items WHERE id = ?", (item_id,)):
+        abort(404)
+    execute("DELETE FROM deleted_items WHERE id = ?", (item_id,))
+    return jsonify(load_state())
 
 
 @app.route("/api/systems", methods=["POST"])
@@ -797,12 +1154,28 @@ def update_site_visit(visit_id):
 @app.route("/api/site-visits/<int:visit_id>", methods=["DELETE"])
 def delete_site_visit(visit_id):
     require_login()
-    system_ids = [
-        row["system_id"]
-        for row in query_all("SELECT DISTINCT system_id FROM maintenance_records WHERE visit_id = ?", (visit_id,))
-    ]
-    execute("DELETE FROM maintenance_records WHERE visit_id = ?", (visit_id,))
-    execute("DELETE FROM site_visits WHERE id = ?", (visit_id,))
+    with get_db() as db:
+        site_visit = db.execute("SELECT * FROM site_visits WHERE id = ?", (visit_id,)).fetchone()
+        if not site_visit:
+            abort(404)
+        records = [
+            dict(row)
+            for row in db.execute(
+                "SELECT * FROM maintenance_records WHERE visit_id = ? ORDER BY id",
+                (visit_id,),
+            ).fetchall()
+        ]
+        system_ids = sorted({record["system_id"] for record in records})
+        archive_deleted_item(
+            db,
+            "site_visit",
+            visit_id,
+            f"{site_visit['location']} - {site_visit['date']}",
+            {"site_visit": dict(site_visit), "records": records},
+        )
+        db.execute("DELETE FROM maintenance_records WHERE visit_id = ?", (visit_id,))
+        db.execute("DELETE FROM site_visits WHERE id = ?", (visit_id,))
+        db.commit()
     for system_id in system_ids:
         refresh_last_visit(system_id)
     return jsonify(load_state())
@@ -857,11 +1230,32 @@ def update_maintenance(record_id):
 @app.route("/api/maintenance/<int:record_id>", methods=["DELETE"])
 def delete_maintenance(record_id):
     require_login()
-    record = query_one("SELECT system_id, visit_id FROM maintenance_records WHERE id = ?", (record_id,))
-    execute("DELETE FROM maintenance_records WHERE id = ?", (record_id,))
-    if record:
-        refresh_last_visit(record["system_id"])
-        delete_site_visit_if_empty(record["visit_id"])
+    with get_db() as db:
+        record = db.execute("SELECT * FROM maintenance_records WHERE id = ?", (record_id,)).fetchone()
+        if not record:
+            abort(404)
+        system = db.execute("SELECT name FROM systems WHERE id = ?", (record["system_id"],)).fetchone()
+        site_visit = None
+        if record["visit_id"]:
+            site_visit = db.execute("SELECT * FROM site_visits WHERE id = ?", (record["visit_id"],)).fetchone()
+        archive_deleted_item(
+            db,
+            "visit",
+            record_id,
+            f"{system['name'] if system else 'System'} - {record['date']}",
+            {
+                "site_visit": dict(site_visit) if site_visit else None,
+                "records": [dict(record)],
+            },
+        )
+        db.execute("DELETE FROM maintenance_records WHERE id = ?", (record_id,))
+        if record["visit_id"] and not db.execute(
+            "SELECT 1 FROM maintenance_records WHERE visit_id = ? LIMIT 1",
+            (record["visit_id"],),
+        ).fetchone():
+            db.execute("DELETE FROM site_visits WHERE id = ?", (record["visit_id"],))
+        db.commit()
+    refresh_last_visit(record["system_id"])
     return jsonify(load_state())
 
 
@@ -963,7 +1357,20 @@ def update_theme():
 @app.route("/api/issues/<int:issue_id>", methods=["DELETE"])
 def delete_issue(issue_id):
     require_login()
-    execute("DELETE FROM system_issues WHERE id = ?", (issue_id,))
+    with get_db() as db:
+        issue = db.execute("SELECT * FROM system_issues WHERE id = ?", (issue_id,)).fetchone()
+        if not issue:
+            abort(404)
+        system = db.execute("SELECT name FROM systems WHERE id = ?", (issue["system_id"],)).fetchone()
+        archive_deleted_item(
+            db,
+            "issue",
+            issue_id,
+            f"{system['name'] if system else 'System'} - {issue['title']}",
+            {"issue": dict(issue)},
+        )
+        db.execute("DELETE FROM system_issues WHERE id = ?", (issue_id,))
+        db.commit()
     return jsonify(load_state())
 
 

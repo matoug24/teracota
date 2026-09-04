@@ -1,4 +1,5 @@
-let state = { authenticated: false, systems: [], tasks: [], locations: [], theme: "standard" };
+let state = { authenticated: false, systems: [], tasks: [], locations: [], deleted_items: [], theme: "standard" };
+let visitorLogData = null;
 let activeView = "systems";
 let dialogMode = null;
 let editingItem = null;
@@ -29,6 +30,7 @@ const systemsView = document.querySelector("#systemsView");
 const systemDetailPage = document.querySelector("#systemDetailPage");
 const locationDetailPage = document.querySelector("#locationDetailPage");
 const adminPage = document.querySelector("#adminPage");
+const logsPage = document.querySelector("#logsPage");
 const themeStylesheet = document.querySelector("#themeStylesheet");
 const entryDialog = document.querySelector("#entryDialog");
 const entryForm = document.querySelector("#entryForm");
@@ -130,12 +132,18 @@ function render() {
     return;
   }
 
+  if (pageMode === "logs") {
+    renderLogsPage();
+    return;
+  }
+
   const showingDevelopment = activeView === "development";
   systemsView.classList.toggle("hidden", showingDevelopment);
   developmentPanel.classList.toggle("hidden", !showingDevelopment);
   systemDetailPage.classList.add("hidden");
   locationDetailPage.classList.add("hidden");
   adminPage.classList.add("hidden");
+  logsPage.classList.add("hidden");
 
   document.querySelectorAll(".nav-tab").forEach((button) => {
     button.classList.toggle("active", button.dataset.view === activeView);
@@ -295,6 +303,9 @@ function renderSystemDetailPage() {
   const system = state.systems.find((item) => item.id === initialSystemId);
   systemsView.classList.add("hidden");
   developmentPanel.classList.add("hidden");
+  locationDetailPage.classList.add("hidden");
+  adminPage.classList.add("hidden");
+  logsPage.classList.add("hidden");
   systemDetailPage.classList.remove("hidden");
 
   document.querySelectorAll(".nav-tab").forEach((button) => {
@@ -362,7 +373,7 @@ function renderSystemDetailPage() {
         <div><span>Open Issues</span><strong>${openIssueCount}</strong></div>
         <div><span>Total Issues</span><strong>${system.issues.length}</strong></div>
         <div><span>Total Visits</span><strong>${system.maintenance.length}</strong></div>
-        <div class="timeline-notes"><span>Operations Notes</span><p>${escapeHtml(system.notes || "No notes yet.")}</p></div>
+        ${system.notes ? `<div class="timeline-notes"><span>Operations Notes</span><p>${escapeHtml(system.notes)}</p></div>` : ""}
       </div>
     </section>
 
@@ -384,7 +395,7 @@ function renderSystemDetailPage() {
           <h3>Visit History</h3>
           <span class="tag">${system.maintenance.length} visits</span>
         </header>
-        ${renderFilterGroup("Work Completed", "visit-type", ["All", ...visitCategories], visitTypeFilter)}
+        ${renderFilterGroup("Visit Purpose", "visit-type", ["All", ...visitCategories, "Unknown Reason"], visitTypeFilter)}
         <div class="record-list">
           ${renderMaintenanceItems(visibleVisits)}
         </div>
@@ -437,6 +448,7 @@ function renderLocationDetailPage() {
   developmentPanel.classList.add("hidden");
   systemDetailPage.classList.add("hidden");
   adminPage.classList.add("hidden");
+  logsPage.classList.add("hidden");
   locationDetailPage.classList.remove("hidden");
   setSystemsNavActive();
 
@@ -521,6 +533,7 @@ function renderAdminPage() {
   developmentPanel.classList.add("hidden");
   systemDetailPage.classList.add("hidden");
   locationDetailPage.classList.add("hidden");
+  logsPage.classList.add("hidden");
   adminPage.classList.remove("hidden");
   setSystemsNavActive();
 
@@ -542,6 +555,16 @@ function renderAdminPage() {
     </section>
 
     <section class="admin-section">
+      <header><div><p class="eyebrow">Portable backup</p><h3>Data Export and Restore</h3></div><span class="tag">CSV</span></header>
+      <div class="admin-data-actions">
+        <a class="primary-button link-button" href="/api/admin/export.csv" download>Export All Data</a>
+        <button class="secondary-button" id="restoreCsvButton" type="button">Restore From CSV</button>
+        <input class="hidden-file-input" id="restoreCsvInput" type="file" accept=".csv,text/csv" />
+      </div>
+      <p class="muted admin-help">The backup includes systems, visits, issues, development items, settings, and deleted records. Visitor logs are never exported or replaced.</p>
+    </section>
+
+    <section class="admin-section">
       <header><div><p class="eyebrow">Fleet records</p><h3>System Management</h3></div><span class="tag">${state.systems.length} systems</span></header>
       <div class="admin-system-list">
         ${state.systems.map((system) => `
@@ -554,6 +577,15 @@ function renderAdminPage() {
             </div>
           </article>
         `).join("")}
+      </div>
+    </section>
+
+    <section class="admin-section">
+      <header><div><p class="eyebrow">Recovery area</p><h3>Deleted Records</h3></div><span class="tag">${state.deleted_items.length}</span></header>
+      <div class="deleted-record-list">
+        ${state.deleted_items.length ? state.deleted_items.map(renderDeletedItem).join("") : `
+          <div class="admin-empty-state"><strong>No deleted records</strong><span>Deleted issues and visits will remain available here.</span></div>
+        `}
       </div>
     </section>
   `;
@@ -573,6 +605,148 @@ function renderAdminPage() {
   adminPage.querySelectorAll("[data-admin-delete]").forEach((button) => {
     button.addEventListener("click", () => deleteItem("system", Number(button.dataset.adminDelete)));
   });
+  document.querySelector("#restoreCsvButton")?.addEventListener("click", () => {
+    document.querySelector("#restoreCsvInput")?.click();
+  });
+  document.querySelector("#restoreCsvInput")?.addEventListener("change", restoreCsvBackup);
+  adminPage.querySelectorAll("[data-admin-restore]").forEach((button) => {
+    button.addEventListener("click", () => restoreDeletedItem(Number(button.dataset.adminRestore)));
+  });
+  adminPage.querySelectorAll("[data-admin-purge]").forEach((button) => {
+    button.addEventListener("click", () => permanentlyDeleteItem(Number(button.dataset.adminPurge)));
+  });
+}
+
+function renderDeletedItem(item) {
+  const kind = item.item_type === "issue" ? "Issue" : "Visit";
+  return `
+    <article class="deleted-record-row">
+      <div class="deleted-record-copy">
+        <span class="tag">${kind}</span>
+        <strong>${escapeHtml(item.label)}</strong>
+        <small>Deleted ${formatDateTime(item.deleted_at)} by ${escapeHtml(item.deleted_by)}</small>
+      </div>
+      <div class="item-actions">
+        <button class="secondary-button" type="button" data-admin-restore="${item.id}">Restore</button>
+        <button class="danger-button" type="button" data-admin-purge="${item.id}">Delete Permanently</button>
+      </div>
+    </article>
+  `;
+}
+
+async function restoreDeletedItem(itemId) {
+  await sendJson(`/api/admin/deleted-items/${itemId}/restore`, {
+    method: "POST",
+    body: "{}",
+  });
+}
+
+async function permanentlyDeleteItem(itemId) {
+  if (!window.confirm("Permanently delete this archived record? This cannot be undone.")) return;
+  await sendJson(`/api/admin/deleted-items/${itemId}`, { method: "DELETE" });
+}
+
+async function restoreCsvBackup(event) {
+  const input = event.currentTarget;
+  const file = input.files?.[0];
+  if (!file) return;
+  if (!window.confirm("Restore this CSV backup? Current application data will be replaced, but visitor logs will be kept.")) {
+    input.value = "";
+    return;
+  }
+
+  const formData = new FormData();
+  formData.append("file", file);
+  try {
+    const response = await fetch("/api/admin/import", { method: "POST", body: formData });
+    const payload = await response.json().catch(() => ({}));
+    if (!response.ok) {
+      if (response.status === 401) {
+        redirectToLogin();
+        return;
+      }
+      throw new Error(payload.message || `Unable to restore the backup (${response.status}).`);
+    }
+    state = payload;
+    render();
+    window.alert(`Backup restored successfully. ${payload.imported_rows || 0} records imported.`);
+  } catch (error) {
+    window.alert(error.message);
+  } finally {
+    input.value = "";
+  }
+}
+
+async function renderLogsPage() {
+  systemsView.classList.add("hidden");
+  developmentPanel.classList.add("hidden");
+  systemDetailPage.classList.add("hidden");
+  locationDetailPage.classList.add("hidden");
+  adminPage.classList.add("hidden");
+  logsPage.classList.remove("hidden");
+  setSystemsNavActive();
+
+  logsPage.innerHTML = `
+    <div class="detail-page-header">
+      <div><p class="eyebrow">Restricted audit view</p><h2>Visitor Records</h2></div>
+      <a class="secondary-button link-button" href="/">Back to Systems</a>
+    </div>
+    <section class="admin-section">
+      <div class="logs-loading">Loading visitor records...</div>
+    </section>
+  `;
+
+  if (!visitorLogData) {
+    try {
+      const response = await fetch("/api/logs?limit=500");
+      const payload = await response.json().catch(() => ({}));
+      if (!response.ok) {
+        if (response.status === 401) {
+          redirectToLogin();
+          return;
+        }
+        throw new Error(payload.message || "Unable to load visitor records.");
+      }
+      visitorLogData = payload;
+    } catch (error) {
+      logsPage.querySelector(".logs-loading").textContent = error.message;
+      return;
+    }
+  }
+
+  const logs = visitorLogData.logs || [];
+  logsPage.innerHTML = `
+    <div class="detail-page-header">
+      <div><p class="eyebrow">Restricted audit view</p><h2>Visitor Records</h2></div>
+      <a class="secondary-button link-button" href="/">Back to Systems</a>
+    </div>
+    <section class="admin-section">
+      <header>
+        <div><p class="eyebrow">Page access</p><h3>Recent Activity</h3></div>
+        <span class="tag">Showing ${logs.length} of ${visitorLogData.total || logs.length}</span>
+      </header>
+      <div class="logs-table-wrap">
+        <table class="logs-table">
+          <thead><tr><th>Time</th><th>IP Address</th><th>Device</th><th>Request</th><th>User</th></tr></thead>
+          <tbody>
+            ${logs.length ? logs.map((entry) => `
+              <tr>
+                <td>${formatDateTime(entry.visited_at)}</td>
+                <td><code>${escapeHtml(entry.ip_address)}</code></td>
+                <td>
+                  <strong>${escapeHtml(entry.device)}</strong>
+                  <span>${escapeHtml(entry.browser)} on ${escapeHtml(entry.platform)}</span>
+                  <details><summary>User agent</summary><p>${escapeHtml(entry.user_agent || "Unknown")}</p></details>
+                </td>
+                <td><span class="tag">${escapeHtml(entry.method)}</span><code>${escapeHtml(entry.path)}</code></td>
+                <td>${escapeHtml(entry.username)}</td>
+              </tr>
+            `).join("") : '<tr><td colspan="5">No visitor records have been captured.</td></tr>'}
+          </tbody>
+        </table>
+      </div>
+    </section>
+  `;
 }
 
 function setSystemsNavActive() {
@@ -645,7 +819,7 @@ function renderLocationVisits(siteVisits) {
         ${visit.records.map((record) => `
           <div class="site-visit-system-row">
             <a href="/systems/${record.systemId}">${escapeHtml(record.systemName)}</a>
-            <span>${escapeHtml(record.type)}</span>
+            <span>${escapeHtml(visitPurpose(record.type))}</span>
             <p>${escapeHtml(record.summary || "No summary added.")}</p>
           </div>
         `).join("")}
@@ -713,8 +887,8 @@ function showTaskDetails(taskId) {
       <p class="muted">${escapeHtml(task.notes || "No details added.")}</p>
     </div>
     <div class="dialog-actions-inline requires-auth">
-      <button class="secondary-button" type="button" id="editTaskButton">Edit Task</button>
-      <button class="danger-button" type="button" id="deleteTaskButton">Delete Task</button>
+      <button class="secondary-button" type="button" id="editTaskButton">Edit Item</button>
+      <button class="danger-button" type="button" id="deleteTaskButton">Delete Item</button>
     </div>
   `;
   detailDialog.showModal();
@@ -732,8 +906,8 @@ function showTaskDetails(taskId) {
 function emptyTask(category) {
   return `
     <div class="task-item empty-task">
-      <h3>No ${category.toLowerCase()} tasks</h3>
-      <span class="task-time">${state.authenticated ? "Add a development task when shared work is identified." : "Log in to add tasks."}</span>
+      <h3>No ${category.toLowerCase()} items</h3>
+      <span class="task-time">Add an item when shared development work is identified.</span>
     </div>
   `;
 }
@@ -772,11 +946,11 @@ function openDialog(mode, item = null) {
       fields: issueFields(item),
     },
     task: {
-      title: "Add Development Task",
+      title: "Add Development Item",
       fields: taskFields(),
     },
     editTask: {
-      title: "Edit Development Task",
+      title: "Edit Development Item",
       fields: taskFields(item),
     },
   };
@@ -873,13 +1047,17 @@ function showFormError(message) {
 async function deleteItem(type, id) {
   const labels = {
     system: "system",
-    maintenance: "maintenance record",
+    maintenance: "visit record",
     siteVisit: "site visit and all linked system records",
     issue: "issue",
-    task: "development task",
+    task: "development item",
     statusHistory: "status event",
   };
-  if (!window.confirm(`Delete this ${labels[type]}?`)) return;
+  const recoverable = ["maintenance", "siteVisit", "issue"].includes(type);
+  const prompt = recoverable
+    ? `Remove this ${labels[type]}? It can be restored later from Deleted Records in the admin page.`
+    : `Delete this ${labels[type]}?`;
+  if (!window.confirm(prompt)) return;
 
   const routes = {
     system: `/api/systems/${id}`,
@@ -991,7 +1169,7 @@ function maintenanceFields(record = {}, selectedSystemIds = [], location = "") {
     ));
   }
   fields.push(
-    field("type", "Work Completed", "checkboxes", splitList(record.type), visitCategories),
+    field("type", "Visit Purpose", "checkboxes", splitList(record.type), visitCategories),
     field("summary", "Summary", "textarea", record.summary || ""),
   );
   return fields;
@@ -1100,7 +1278,7 @@ function renderMaintenanceItems(records) {
   return records.map((record) => `
     <article class="record-item">
       <div class="item-header">
-        <h3>${escapeHtml(record.type)} - ${formatDate(record.date)}</h3>
+        <h3>${escapeHtml(visitPurpose(record.type))} - ${formatDate(record.date)}</h3>
         <div class="item-actions requires-auth">
           <button class="secondary-button" type="button" data-edit-maintenance="${record.id}">Edit</button>
           <button class="danger-button" type="button" data-delete-maintenance="${record.id}">Delete</button>
@@ -1155,7 +1333,7 @@ function eventMarkers(system, start, end) {
       severityClass: "",
       statusClass: "",
       label: "V",
-      title: `${record.type} visit - ${formatDate(record.date)} - ${record.summary || ""}`,
+      title: `${visitPurpose(record.type)} visit - ${formatDate(record.date)} - ${record.summary || ""}`,
     });
   });
   system.issues.forEach((issue) => {
@@ -1386,6 +1564,11 @@ function splitList(value) {
   return String(value || "").split(",").map((item) => item.trim()).filter(Boolean);
 }
 
+function visitPurpose(value) {
+  const purposes = splitList(value).filter((item) => visitCategories.includes(item));
+  return purposes.length ? purposes.join(", ") : "Unknown Reason";
+}
+
 function addMonths(dateValue, months) {
   const copy = new Date(dateValue);
   copy.setMonth(copy.getMonth() + months);
@@ -1412,6 +1595,19 @@ function formatDate(dateString) {
     month: "short",
     day: "numeric",
   }).format(new Date(`${dateString}T00:00:00`));
+}
+
+function formatDateTime(value) {
+  if (!value) return "Not set";
+  const parsed = new Date(value);
+  if (Number.isNaN(parsed.getTime())) return String(value);
+  return new Intl.DateTimeFormat("en", {
+    year: "numeric",
+    month: "short",
+    day: "numeric",
+    hour: "2-digit",
+    minute: "2-digit",
+  }).format(parsed);
 }
 
 function escapeHtml(value) {

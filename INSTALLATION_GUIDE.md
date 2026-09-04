@@ -418,8 +418,7 @@ git push origin main
 For the first update that includes the deployment script, connect to Lightsail and run:
 
 ```bash
-cd /opt/teracota
-sudo -u teracota git pull --ff-only origin main
+sudo -u teracota git -C /opt/teracota pull --ff-only origin main
 sudo bash /opt/teracota/deploy/update_lightsail.sh
 ```
 

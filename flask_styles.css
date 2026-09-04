@@ -1271,6 +1271,71 @@ dialog::backdrop {
   gap: 10px;
 }
 
+.admin-location-list {
+  display: grid;
+  gap: 8px;
+}
+
+.admin-location-row {
+  display: grid;
+  grid-template-columns: 38px minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 12px;
+  border: 1px solid var(--line);
+  border-radius: 7px;
+  background: var(--surface);
+  padding: 10px 12px;
+}
+
+.location-rank {
+  display: grid;
+  width: 32px;
+  height: 32px;
+  place-items: center;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  background: var(--surface-alt);
+  color: var(--muted);
+  font-size: 0.78rem;
+  font-weight: 900;
+}
+
+.admin-location-copy {
+  display: grid;
+  min-width: 0;
+  gap: 3px;
+}
+
+.admin-location-copy strong {
+  overflow-wrap: anywhere;
+}
+
+.admin-location-copy span {
+  color: var(--muted);
+  font-size: 0.8rem;
+}
+
+.location-order-actions {
+  display: flex;
+  gap: 6px;
+}
+
+.location-order-actions .icon-button {
+  background: var(--surface-alt);
+  border-color: var(--line);
+  font-size: 1rem;
+}
+
+.location-order-actions .icon-button:hover:not(:disabled) {
+  border-color: var(--blue);
+  color: var(--blue);
+}
+
+.location-order-actions .icon-button:disabled {
+  cursor: not-allowed;
+  opacity: 0.35;
+}
+
 .admin-help {
   margin: -4px 0 0;
 }
@@ -1747,6 +1812,11 @@ button.task-item:hover {
 
   .deleted-record-copy small {
     grid-column: 1;
+  }
+
+  .admin-location-row {
+    grid-template-columns: 34px minmax(0, 1fr) auto;
+    gap: 9px;
   }
 
   .site-visit-system-row {

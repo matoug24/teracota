@@ -191,10 +191,12 @@ def init_db():
         CREATE TABLE IF NOT EXISTS locations (
             name TEXT PRIMARY KEY,
             contacts TEXT NOT NULL DEFAULT '',
-            notes TEXT NOT NULL DEFAULT ''
+            notes TEXT NOT NULL DEFAULT '',
+            display_rank INTEGER NOT NULL DEFAULT 0
         )
         """
     )
+    ensure_column("locations", "display_rank", "INTEGER NOT NULL DEFAULT 0")
     execute(
         """
         CREATE TABLE IF NOT EXISTS app_settings (
@@ -237,6 +239,7 @@ def init_db():
     if env_flag("TERACOTA_SEED_DEMO", not PRODUCTION):
         seed_db()
     sync_locations()
+    normalize_location_ranks()
     backfill_status_history()
     execute("INSERT OR IGNORE INTO app_settings (key, value) VALUES ('theme', 'standard')")
 
@@ -364,7 +367,14 @@ def seed_db():
 
 
 def load_state():
-    systems = query_all("SELECT * FROM systems ORDER BY location, name")
+    systems = query_all(
+        """
+        SELECT systems.*
+        FROM systems
+        LEFT JOIN locations ON locations.name = systems.location
+        ORDER BY COALESCE(locations.display_rank, 2147483647), systems.name
+        """
+    )
     for system in systems:
         system["maintenance"] = query_all(
             "SELECT * FROM maintenance_records WHERE system_id = ? ORDER BY date DESC, id DESC",
@@ -384,7 +394,7 @@ def load_state():
         )
 
     tasks = query_all("SELECT * FROM development_tasks ORDER BY category, created_at DESC, id DESC")
-    locations = query_all("SELECT * FROM locations ORDER BY name")
+    locations = query_all("SELECT * FROM locations ORDER BY display_rank, name")
     deleted_items = query_all(
         """
         SELECT id, item_type, original_id, label, deleted_at, deleted_by
@@ -721,8 +731,29 @@ def app_asset(filename):
 
 
 def sync_locations():
-    for row in query_all("SELECT DISTINCT location FROM systems WHERE location <> ''"):
-        execute("INSERT OR IGNORE INTO locations (name, contacts, notes) VALUES (?, '', '')", (row["location"],))
+    existing = {row["name"] for row in query_all("SELECT name FROM locations")}
+    current_max = query_one("SELECT COALESCE(MAX(display_rank), 0) AS maximum FROM locations")
+    next_rank = current_max["maximum"] + 1
+    for row in query_all("SELECT DISTINCT location FROM systems WHERE location <> '' ORDER BY location"):
+        if row["location"] in existing:
+            continue
+        execute(
+            "INSERT INTO locations (name, contacts, notes, display_rank) VALUES (?, '', '', ?)",
+            (row["location"], next_rank),
+        )
+        existing.add(row["location"])
+        next_rank += 1
+
+
+def normalize_location_ranks():
+    locations = query_all("SELECT name FROM locations ORDER BY display_rank, name")
+    with get_db() as db:
+        for rank, location in enumerate(locations, start=1):
+            db.execute(
+                "UPDATE locations SET display_rank = ? WHERE name = ?",
+                (rank, location["name"]),
+            )
+        db.commit()
 
 
 def backfill_status_history():
@@ -960,6 +991,7 @@ def import_database_csv():
         db.close()
 
     sync_locations()
+    normalize_location_ranks()
     backfill_status_history()
     return jsonify({"imported_rows": imported_rows, **load_state()})
 
@@ -1327,13 +1359,52 @@ def update_issue(issue_id):
 def update_location(location):
     require_login()
     payload = request.get_json(force=True)
+    existing = query_one("SELECT display_rank FROM locations WHERE name = ?", (location,))
+    current_max = query_one("SELECT COALESCE(MAX(display_rank), 0) AS maximum FROM locations")
+    display_rank = existing["display_rank"] if existing else current_max["maximum"] + 1
     execute(
         """
-        INSERT INTO locations (name, contacts, notes) VALUES (?, ?, ?)
+        INSERT INTO locations (name, contacts, notes, display_rank) VALUES (?, ?, ?, ?)
         ON CONFLICT(name) DO UPDATE SET contacts = excluded.contacts, notes = excluded.notes
         """,
-        (location, clean(payload.get("contacts")), clean(payload.get("notes"))),
+        (location, clean(payload.get("contacts")), clean(payload.get("notes")), display_rank),
     )
+    return jsonify(load_state())
+
+
+@app.route("/api/admin/locations/order", methods=["PUT"])
+def update_location_order():
+    require_login()
+    payload = request.get_json(force=True)
+    location_names = payload.get("locations")
+    if not isinstance(location_names, list):
+        return jsonify({"message": "Locations must be provided as an ordered list"}), 400
+    location_names = [clean(name) for name in location_names]
+    active_names = {
+        row["location"]
+        for row in query_all("SELECT DISTINCT location FROM systems WHERE location <> ''")
+    }
+    if (
+        any(not name for name in location_names)
+        or len(location_names) != len(set(location_names))
+        or set(location_names) != active_names
+    ):
+        return jsonify({"message": "The location order must include every active location exactly once"}), 400
+
+    inactive_names = [
+        row["name"]
+        for row in query_all("SELECT name FROM locations ORDER BY display_rank, name")
+        if row["name"] not in active_names
+    ]
+    ordered_names = location_names + inactive_names
+
+    with get_db() as db:
+        for rank, name in enumerate(ordered_names, start=1):
+            db.execute(
+                "UPDATE locations SET display_rank = ? WHERE name = ?",
+                (rank, name),
+            )
+        db.commit()
     return jsonify(load_state())
 
 

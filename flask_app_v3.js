@@ -541,6 +541,7 @@ function renderAdminPage() {
     redirectToLogin();
     return;
   }
+  const rankedLocations = activeLocations();
 
   adminPage.innerHTML = `
     <div class="section-header">
@@ -562,6 +563,26 @@ function renderAdminPage() {
         <input class="hidden-file-input" id="restoreCsvInput" type="file" accept=".csv,text/csv" />
       </div>
       <p class="muted admin-help">The backup includes systems, visits, issues, development items, settings, and deleted records. Visitor logs are never exported or replaced.</p>
+    </section>
+
+    <section class="admin-section">
+      <header><div><p class="eyebrow">Dashboard sequence</p><h3>Location Display Order</h3></div><span class="tag">${rankedLocations.length} locations</span></header>
+      <div class="admin-location-list">
+        ${rankedLocations.length ? rankedLocations.map((location, index) => `
+          <article class="admin-location-row">
+            <span class="location-rank" aria-label="Rank ${index + 1}">${index + 1}</span>
+            <div class="admin-location-copy">
+              <strong>${escapeHtml(location.name)}</strong>
+              <span>${systemsAtLocation(location.name).length} system${systemsAtLocation(location.name).length === 1 ? "" : "s"}</span>
+            </div>
+            <div class="location-order-actions">
+              <button class="icon-button" type="button" data-location-index="${index}" data-location-direction="-1" aria-label="Move ${escapeAttribute(location.name)} up" title="Move up" ${index === 0 ? "disabled" : ""}>&uarr;</button>
+              <button class="icon-button" type="button" data-location-index="${index}" data-location-direction="1" aria-label="Move ${escapeAttribute(location.name)} down" title="Move down" ${index === rankedLocations.length - 1 ? "disabled" : ""}>&darr;</button>
+            </div>
+          </article>
+        `).join("") : '<div class="admin-empty-state"><strong>No locations</strong><span>Add a system to create its location.</span></div>'}
+      </div>
+      <p class="muted admin-help">The first location in this list appears first on the Systems dashboard.</p>
     </section>
 
     <section class="admin-section">
@@ -605,6 +626,12 @@ function renderAdminPage() {
   adminPage.querySelectorAll("[data-admin-delete]").forEach((button) => {
     button.addEventListener("click", () => deleteItem("system", Number(button.dataset.adminDelete)));
   });
+  adminPage.querySelectorAll("[data-location-direction]").forEach((button) => {
+    button.addEventListener("click", () => moveLocation(
+      Number(button.dataset.locationIndex),
+      Number(button.dataset.locationDirection),
+    ));
+  });
   document.querySelector("#restoreCsvButton")?.addEventListener("click", () => {
     document.querySelector("#restoreCsvInput")?.click();
   });
@@ -615,6 +642,22 @@ function renderAdminPage() {
   adminPage.querySelectorAll("[data-admin-purge]").forEach((button) => {
     button.addEventListener("click", () => permanentlyDeleteItem(Number(button.dataset.adminPurge)));
   });
+}
+
+async function moveLocation(index, direction) {
+  const orderedNames = activeLocations().map((location) => location.name);
+  const targetIndex = index + direction;
+  if (index < 0 || targetIndex < 0 || targetIndex >= orderedNames.length) return;
+  [orderedNames[index], orderedNames[targetIndex]] = [orderedNames[targetIndex], orderedNames[index]];
+  await sendJson("/api/admin/locations/order", {
+    method: "PUT",
+    body: JSON.stringify({ locations: orderedNames }),
+  });
+}
+
+function activeLocations() {
+  const activeNames = new Set(state.systems.map((system) => system.location));
+  return state.locations.filter((location) => activeNames.has(location.name));
 }
 
 function renderDeletedItem(item) {
@@ -1519,7 +1562,12 @@ function groupByLocation(systems) {
     if (!map.has(system.location)) map.set(system.location, []);
     map.get(system.location).push(system);
   });
-  return [...map.entries()];
+  const ranks = new Map(state.locations.map((location, index) => [location.name, index]));
+  return [...map.entries()].sort(([locationA], [locationB]) => {
+    const rankA = ranks.has(locationA) ? ranks.get(locationA) : Number.MAX_SAFE_INTEGER;
+    const rankB = ranks.has(locationB) ? ranks.get(locationB) : Number.MAX_SAFE_INTEGER;
+    return rankA - rankB || locationA.localeCompare(locationB);
+  });
 }
 
 function getCurrentSystem() {

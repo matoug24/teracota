@@ -415,27 +415,37 @@ git commit -m "Describe the TeraCota update"
 git push origin main
 ```
 
-Then connect to the Lightsail server. Back up the database and pull only fast-forward changes from GitHub:
+For the first update that includes the deployment script, connect to Lightsail and run:
 
 ```bash
-STAMP=$(date +%Y%m%d-%H%M%S)
-sudo -u teracota sqlite3 /var/lib/teracota/teracota.sqlite3 \
-  ".backup '/var/backups/teracota/before-update-${STAMP}.sqlite3'"
-
 cd /opt/teracota
-sudo -u teracota git status --short
-sudo -u teracota git fetch origin
 sudo -u teracota git pull --ff-only origin main
-
-sudo -u teracota /opt/teracota/.venv/bin/pip install -r /opt/teracota/requirements.txt
-sudo cp /opt/teracota/deploy/teracota.service /etc/systemd/system/teracota.service
-sudo systemctl daemon-reload
-sudo systemctl restart teracota
-sudo nginx -t && sudo systemctl reload nginx
-curl -fsS http://127.0.0.1:8000/healthz
+sudo bash /opt/teracota/deploy/update_lightsail.sh
 ```
 
-The ignored `/opt/teracota/.env`, virtual environment, and `/var/lib/teracota/teracota.sqlite3` remain unchanged during the pull. If `git status --short` reports tracked-file changes on the server, investigate them before pulling rather than discarding them.
+The script installs a small command wrapper. Every later deployment is one command:
+
+```bash
+sudo update-teracota
+```
+
+The updater performs the following work automatically:
+
+1. Refuses to continue if the server checkout contains local changes.
+2. Creates a timestamped SQLite backup in `/var/backups/teracota`.
+3. Pulls `origin/main` using fast-forward-only Git behavior.
+4. Installs the pinned Python dependencies and checks the Python source.
+5. Updates the systemd service and preserves Certbot's live HTTPS configuration.
+6. Validates Nginx, restarts TeraCota, and waits for a successful health check.
+7. Prints the old and new Git commits and the database backup path.
+
+The ignored `/opt/teracota/.env`, virtual environment, and `/var/lib/teracota/teracota.sqlite3` remain unchanged during the pull. If the script reports local changes, investigate them before updating rather than discarding them.
+
+To update from a branch other than `main` for a deliberate test deployment, override the branch for that run:
+
+```bash
+sudo TERACOTA_BRANCH=branch-name update-teracota
+```
 
 ## 16. Operations and troubleshooting
 

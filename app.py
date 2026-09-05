@@ -174,6 +174,7 @@ def init_db():
     ensure_column("system_issues", "reported_by", "TEXT NOT NULL DEFAULT ''")
     ensure_column("system_issues", "resolution_notes", "TEXT NOT NULL DEFAULT ''")
     ensure_column("system_issues", "closed_date", "TEXT NOT NULL DEFAULT ''")
+    ensure_column("system_issues", "related_to", "TEXT NOT NULL DEFAULT ''")
     ensure_column("maintenance_records", "visit_id", "INTEGER")
     execute(
         """
@@ -388,6 +389,7 @@ def load_state():
         )
         for issue in system["issues"]:
             issue["severity"] = clean_severity(issue["severity"])
+            issue["related_to"] = clean_issue_relations(issue.get("related_to"))
         system["status_history"] = query_all(
             "SELECT * FROM system_status_history WHERE system_id = ? ORDER BY started_at, id",
             (system["id"],),
@@ -503,6 +505,7 @@ def record_page_visit():
         "location_detail",
         "admin_page",
         "logs_page",
+        "statistics_page",
         "login_page",
     }
     if request.method != "GET" or request.endpoint not in page_endpoints:
@@ -534,12 +537,27 @@ def record_page_visit():
 
 
 def clean_categories(value):
-    allowed = ["Calibration", "Optics", "Commissioning", "Electronics"]
-    if isinstance(value, list):
-        selected = [item for item in value if item in allowed]
-    else:
-        selected = [item.strip() for item in str(value or "").split(",") if item.strip() in allowed]
-    return ", ".join(selected) if selected else "Unknown Reason"
+    allowed = ["Calibration", "Alignment", "Commissioning", "Troubleshooting"]
+    aliases = {"optics": "Alignment"}
+    values = value if isinstance(value, list) else str(value or "").split(",")
+    selected = []
+    for item in values:
+        normalized = aliases.get(str(item).strip().lower(), str(item).strip().title())
+        if normalized in allowed and normalized not in selected:
+            selected.append(normalized)
+    return ", ".join(selected)
+
+
+def clean_issue_relations(value):
+    allowed = ["Head", "HAS", "Fiber", "Optics", "Electronic", "Software", "Other"]
+    lookup = {item.lower(): item for item in allowed}
+    values = value if isinstance(value, list) else str(value or "").split(",")
+    selected = []
+    for item in values:
+        normalized = lookup.get(str(item).strip().lower())
+        if normalized and normalized not in selected:
+            selected.append(normalized)
+    return ", ".join(selected)
 
 
 def clean_system_ids(value):
@@ -829,6 +847,11 @@ def logs_page():
     return render_page("logs")
 
 
+@app.route("/statistics")
+def statistics_page():
+    return render_page("statistics")
+
+
 @app.route("/login", methods=["GET", "POST"])
 def login_page():
     next_url = safe_next_url(request.values.get("next"))
@@ -859,22 +882,31 @@ def api_state():
 def api_logs():
     require_login()
     try:
-        limit = min(max(int(request.args.get("limit", 500)), 1), 2000)
+        page = max(int(request.args.get("page", 1)), 1)
     except ValueError:
-        limit = 500
+        page = 1
+    try:
+        per_page = min(max(int(request.args.get("per_page", 50)), 1), 200)
+    except ValueError:
+        per_page = 50
     total = query_one("SELECT COUNT(*) AS total FROM visitor_logs")["total"]
+    pages = max(1, (total + per_page - 1) // per_page)
+    page = min(page, pages)
     logs = query_all(
-        "SELECT * FROM visitor_logs ORDER BY visited_at DESC, id DESC LIMIT ?",
-        (limit,),
+        "SELECT * FROM visitor_logs ORDER BY visited_at DESC, id DESC LIMIT ? OFFSET ?",
+        (per_page, (page - 1) * per_page),
     )
-    return jsonify({"logs": logs, "total": total, "limit": limit})
+    return jsonify({"logs": logs, "total": total, "page": page, "pages": pages, "per_page": per_page})
 
 
 @app.route("/healthz")
 def health_check():
     try:
-        query_one("SELECT 1 AS healthy")
+        query_one("SELECT id FROM systems LIMIT 1")
+        query_one("SELECT related_to FROM system_issues LIMIT 1")
+        query_one("SELECT id FROM visitor_logs LIMIT 1")
     except sqlite3.Error:
+        app.logger.exception("TeraCota database health check failed")
         return jsonify({"status": "unhealthy"}), 503
     return jsonify({"status": "ok"})
 
@@ -1303,8 +1335,8 @@ def create_issue(system_id):
     execute(
         """
         INSERT INTO system_issues
-            (system_id, title, severity, opened, status, notes, reported_by, resolution_notes, closed_date)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+            (system_id, title, severity, opened, status, notes, reported_by, resolution_notes, closed_date, related_to)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """,
         (
             system_id,
@@ -1316,6 +1348,7 @@ def create_issue(system_id):
             clean(payload.get("reported_by"), "Unknown"),
             clean(payload.get("resolution_notes")),
             closed_date,
+            clean_issue_relations(payload.get("related_to")),
         ),
     )
     if severity == "High":
@@ -1337,7 +1370,7 @@ def update_issue(issue_id):
         """
         UPDATE system_issues
         SET title = ?, severity = ?, opened = ?, status = ?, notes = ?,
-            reported_by = ?, resolution_notes = ?, closed_date = ?
+            reported_by = ?, resolution_notes = ?, closed_date = ?, related_to = ?
         WHERE id = ?
         """,
         (
@@ -1349,6 +1382,7 @@ def update_issue(issue_id):
             clean(payload.get("reported_by"), "Unknown"),
             clean(payload.get("resolution_notes")),
             closed_date,
+            clean_issue_relations(payload.get("related_to")),
             issue_id,
         ),
     )

@@ -20,6 +20,7 @@
         <nav class="nav-tabs" aria-label="Main views">
           <button class="nav-tab nav-tab-primary active" type="button" data-view="systems">Systems</button>
           <button class="nav-tab" type="button" data-view="development">Development</button>
+          <button class="nav-tab" type="button" data-view="statistics">Statistics</button>
         </nav>
 
         <div class="auth-area" id="authArea"></div>
@@ -48,8 +49,7 @@
         <section class="development-panel hidden" id="developmentPanel" aria-labelledby="developmentTitle">
           <div class="section-header">
             <div>
-              <p class="eyebrow">Shared improvement work</p>
-              <h2 id="developmentTitle">Development</h2>
+              <h2 id="developmentTitle">Development Ideas</h2>
             </div>
             <button class="primary-button requires-auth hidden" id="addTaskButton" type="button">Add Item</button>
           </div>
@@ -60,6 +60,7 @@
         <section class="location-detail-page hidden" id="locationDetailPage" aria-live="polite"></section>
         <section class="admin-page hidden" id="adminPage" aria-live="polite"></section>
         <section class="logs-page hidden" id="logsPage" aria-live="polite"></section>
+        <section class="statistics-page hidden" id="statisticsPage" aria-live="polite"></section>
       </main>
     </div>
 
@@ -85,6 +86,6 @@
       <div class="dialog-detail" id="detailDialogContent"></div>
     </dialog>
 
-    <script src="/assets/flask_app_v3.js?v=20260904-location-order"></script>
+    <script src="/assets/flask_app_v3.js?v=20260905-copy-layout"></script>
   </body>
 </html>

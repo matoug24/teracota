@@ -3,18 +3,24 @@ let visitorLogData = null;
 let activeView = "systems";
 let dialogMode = null;
 let editingItem = null;
-let dashboardRangeMonths = 9;
+let dashboardRangeMonths = 12;
 let dashboardRangeOffset = 0;
 let detailRangeScale = 1;
 let detailRangeOffset = 0;
 let issueSeverityFilter = "All";
 let issueStatusFilter = "All";
 let visitTypeFilter = "All";
+let issuePage = 1;
+let visitPage = 1;
+let logsPageNumber = 1;
 
 const pageMode = document.body.dataset.page || "home";
 const initialSystemId = Number(document.body.dataset.systemId || 0);
 const initialLocation = document.body.dataset.location || "";
-const visitCategories = ["Calibration", "Optics", "Commissioning", "Electronics"];
+const visitCategories = ["Calibration", "Alignment", "Commissioning", "Troubleshooting"];
+const issueRelations = ["Head", "HAS", "Fiber", "Optics", "Electronic", "Software", "Other"];
+const systemRecordPageSize = 20;
+const logPageSize = 50;
 const themeOptions = [
   { id: "standard", name: "Standard", description: "Clean field operations", colors: ["#10252f", "#f0b64c", "#f4f7f9"] },
   { id: "control-room", name: "Control Room", description: "Graphite industrial console", colors: ["#242a2d", "#45b97c", "#ffbd45"] },
@@ -31,6 +37,7 @@ const systemDetailPage = document.querySelector("#systemDetailPage");
 const locationDetailPage = document.querySelector("#locationDetailPage");
 const adminPage = document.querySelector("#adminPage");
 const logsPage = document.querySelector("#logsPage");
+const statisticsPage = document.querySelector("#statisticsPage") || createPageContainer("statisticsPage", "statistics-page hidden");
 const themeStylesheet = document.querySelector("#themeStylesheet");
 const entryDialog = document.querySelector("#entryDialog");
 const entryForm = document.querySelector("#entryForm");
@@ -43,11 +50,16 @@ const detailDialogContent = document.querySelector("#detailDialogContent");
 
 document.querySelectorAll(".nav-tab").forEach((button) => {
   button.addEventListener("click", () => {
-    if (pageMode !== "home") {
-      window.location.href = button.dataset.view === "development" ? "/#development" : "/";
+    const view = button.dataset.view;
+    if (view === "statistics") {
+      window.location.href = "/statistics";
       return;
     }
-    setActiveView(button.dataset.view);
+    if (pageMode !== "home") {
+      window.location.href = view === "development" ? "/#development" : "/";
+      return;
+    }
+    setActiveView(view);
   });
 });
 
@@ -77,17 +89,61 @@ entryForm.addEventListener("submit", (event) => {
 
 loadState();
 
+function createPageContainer(id, className) {
+  const container = document.createElement("section");
+  container.id = id;
+  container.className = className;
+  container.setAttribute("aria-live", "polite");
+  document.querySelector(".main")?.append(container);
+  return container;
+}
+
 async function loadState() {
-  const response = await fetch("/api/state");
-  if (response.status === 401) {
-    redirectToLogin();
-    return;
+  try {
+    const response = await fetch("/api/state", { cache: "no-store" });
+    if (response.status === 401) {
+      redirectToLogin();
+      return;
+    }
+    if (!response.ok) throw new Error(`The server returned ${response.status} while loading application data.`);
+    state = await response.json();
+    if (!Array.isArray(state.systems) || !Array.isArray(state.tasks)) {
+      throw new Error("The server returned an incomplete application state.");
+    }
+    if (pageMode === "home" && window.location.hash === "#development") {
+      activeView = "development";
+    }
+    render();
+  } catch (error) {
+    console.error("Unable to initialize TeraCota", error);
+    renderStartupError(error.message);
   }
-  state = await response.json();
-  if (pageMode === "home" && window.location.hash === "#development") {
-    activeView = "development";
+}
+
+function renderStartupError(message) {
+  const targets = {
+    admin: adminPage,
+    logs: logsPage,
+    statistics: statisticsPage,
+    system: systemDetailPage,
+    location: locationDetailPage,
+  };
+  const target = targets[pageMode] || systemsView;
+  [systemsView, developmentPanel, systemDetailPage, locationDetailPage, adminPage, logsPage, statisticsPage]
+    .forEach((page) => page?.classList.add("hidden"));
+  target?.classList.remove("hidden");
+  if (target) {
+    target.innerHTML = `
+      <section class="startup-error">
+        <p class="eyebrow">Application startup error</p>
+        <h2>Unable to load TeraCota data</h2>
+        <p>${escapeHtml(message)}</p>
+        <p>Restart the TeraCota service so the application and database migrations load from the same release.</p>
+        <button class="primary-button" type="button" id="retryStartupButton">Retry</button>
+      </section>
+    `;
+    target.querySelector("#retryStartupButton")?.addEventListener("click", loadState);
   }
-  render();
 }
 
 async function sendJson(url, options) {
@@ -137,6 +193,11 @@ function render() {
     return;
   }
 
+  if (pageMode === "statistics") {
+    renderStatisticsPage();
+    return;
+  }
+
   const showingDevelopment = activeView === "development";
   systemsView.classList.toggle("hidden", showingDevelopment);
   developmentPanel.classList.toggle("hidden", !showingDevelopment);
@@ -144,6 +205,7 @@ function render() {
   locationDetailPage.classList.add("hidden");
   adminPage.classList.add("hidden");
   logsPage.classList.add("hidden");
+  statisticsPage.classList.add("hidden");
 
   document.querySelectorAll(".nav-tab").forEach((button) => {
     button.classList.toggle("active", button.dataset.view === activeView);
@@ -158,7 +220,7 @@ function render() {
 function applyTheme() {
   const theme = themeOptions.find((option) => option.id === state.theme) || themeOptions[0];
   const filename = theme.id === "standard" ? "flask_styles.css" : `flask_styles_${theme.id.replace("-", "_")}.css`;
-  const nextHref = `/assets/${filename}`;
+  const nextHref = `/assets/${filename}?v=20260905-statistics-pagination`;
   if (!themeStylesheet.href.endsWith(nextHref)) themeStylesheet.href = nextHref;
 }
 
@@ -306,6 +368,7 @@ function renderSystemDetailPage() {
   locationDetailPage.classList.add("hidden");
   adminPage.classList.add("hidden");
   logsPage.classList.add("hidden");
+  statisticsPage.classList.add("hidden");
   systemDetailPage.classList.remove("hidden");
 
   document.querySelectorAll(".nav-tab").forEach((button) => {
@@ -335,6 +398,10 @@ function renderSystemDetailPage() {
   const visibleVisits = system.maintenance.filter((record) => (
     visitTypeFilter === "All" || splitList(record.type).includes(visitTypeFilter)
   ));
+  const issuePagination = paginateItems(visibleIssues, issuePage, systemRecordPageSize);
+  const visitPagination = paginateItems(visibleVisits, visitPage, systemRecordPageSize);
+  issuePage = issuePagination.page;
+  visitPage = visitPagination.page;
 
   systemDetailPage.innerHTML = `
     <div class="detail-page-header">
@@ -386,8 +453,9 @@ function renderSystemDetailPage() {
         ${renderFilterGroup("Severity", "issue-severity", ["All", "Low", "Medium", "High"], issueSeverityFilter)}
         ${renderFilterGroup("Status", "issue-status", ["All", "Open", "Closed"], issueStatusFilter)}
         <div class="issue-list">
-          ${renderIssueItems(visibleIssues, "No issues match the selected filters.")}
+          ${renderIssueItems(issuePagination.items, "No issues match the selected filters.")}
         </div>
+        ${renderPagination("issues", issuePagination, "issues")}
       </section>
 
       <section class="detail-section">
@@ -395,10 +463,11 @@ function renderSystemDetailPage() {
           <h3>Visit History</h3>
           <span class="tag">${system.maintenance.length} visits</span>
         </header>
-        ${renderFilterGroup("Visit Purpose", "visit-type", ["All", ...visitCategories, "Unknown Reason"], visitTypeFilter)}
+        ${renderFilterGroup("Visit Purpose", "visit-type", ["All", ...visitCategories], visitTypeFilter)}
         <div class="record-list">
-          ${renderMaintenanceItems(visibleVisits)}
+          ${renderMaintenanceItems(visitPagination.items)}
         </div>
+        ${renderPagination("visits", visitPagination, "visits")}
       </section>
     </div>
   `;
@@ -435,12 +504,55 @@ function bindRecordFilters() {
     button.addEventListener("click", () => {
       const kind = button.dataset.filterKind;
       const value = button.dataset.filterValue;
-      if (kind === "issue-severity") issueSeverityFilter = value;
-      if (kind === "issue-status") issueStatusFilter = value;
-      if (kind === "visit-type") visitTypeFilter = value;
+      if (kind === "issue-severity") {
+        issueSeverityFilter = value;
+        issuePage = 1;
+      }
+      if (kind === "issue-status") {
+        issueStatusFilter = value;
+        issuePage = 1;
+      }
+      if (kind === "visit-type") {
+        visitTypeFilter = value;
+        visitPage = 1;
+      }
       renderSystemDetailPage();
     });
   });
+  systemDetailPage.querySelectorAll("[data-record-page]").forEach((button) => {
+    button.addEventListener("click", () => {
+      const page = Number(button.dataset.pageValue);
+      if (button.dataset.recordPage === "issues") issuePage = page;
+      if (button.dataset.recordPage === "visits") visitPage = page;
+      renderSystemDetailPage();
+    });
+  });
+}
+
+function paginateItems(items, requestedPage, perPage) {
+  const total = items.length;
+  const pages = Math.max(1, Math.ceil(total / perPage));
+  const page = Math.min(Math.max(Number(requestedPage) || 1, 1), pages);
+  const startIndex = (page - 1) * perPage;
+  return {
+    items: items.slice(startIndex, startIndex + perPage),
+    page,
+    pages,
+    total,
+    start: total ? startIndex + 1 : 0,
+    end: Math.min(startIndex + perPage, total),
+  };
+}
+
+function renderPagination(kind, pagination, label) {
+  if (pagination.pages <= 1) return "";
+  return `
+    <nav class="record-pagination" aria-label="${escapeAttribute(label)} pagination">
+      <button class="secondary-button" type="button" data-record-page="${kind}" data-page-value="${pagination.page - 1}" ${pagination.page === 1 ? "disabled" : ""}>Previous</button>
+      <span>Page ${pagination.page} of ${pagination.pages} <small>${pagination.start}-${pagination.end} of ${pagination.total} ${escapeHtml(label)}</small></span>
+      <button class="secondary-button" type="button" data-record-page="${kind}" data-page-value="${pagination.page + 1}" ${pagination.page === pagination.pages ? "disabled" : ""}>Next</button>
+    </nav>
+  `;
 }
 
 function renderLocationDetailPage() {
@@ -449,6 +561,7 @@ function renderLocationDetailPage() {
   systemDetailPage.classList.add("hidden");
   adminPage.classList.add("hidden");
   logsPage.classList.add("hidden");
+  statisticsPage.classList.add("hidden");
   locationDetailPage.classList.remove("hidden");
   setSystemsNavActive();
 
@@ -534,6 +647,7 @@ function renderAdminPage() {
   systemDetailPage.classList.add("hidden");
   locationDetailPage.classList.add("hidden");
   logsPage.classList.add("hidden");
+  statisticsPage.classList.add("hidden");
   adminPage.classList.remove("hidden");
   setSystemsNavActive();
 
@@ -726,6 +840,7 @@ async function renderLogsPage() {
   systemDetailPage.classList.add("hidden");
   locationDetailPage.classList.add("hidden");
   adminPage.classList.add("hidden");
+  statisticsPage.classList.add("hidden");
   logsPage.classList.remove("hidden");
   setSystemsNavActive();
 
@@ -741,7 +856,7 @@ async function renderLogsPage() {
 
   if (!visitorLogData) {
     try {
-      const response = await fetch("/api/logs?limit=500");
+      const response = await fetch(`/api/logs?page=${logsPageNumber}&per_page=${logPageSize}`);
       const payload = await response.json().catch(() => ({}));
       if (!response.ok) {
         if (response.status === 401) {
@@ -751,6 +866,7 @@ async function renderLogsPage() {
         throw new Error(payload.message || "Unable to load visitor records.");
       }
       visitorLogData = payload;
+      logsPageNumber = payload.page || 1;
     } catch (error) {
       logsPage.querySelector(".logs-loading").textContent = error.message;
       return;
@@ -758,6 +874,13 @@ async function renderLogsPage() {
   }
 
   const logs = visitorLogData.logs || [];
+  const logsPagination = {
+    page: visitorLogData.page || 1,
+    pages: visitorLogData.pages || 1,
+    total: visitorLogData.total || 0,
+    start: logs.length ? ((visitorLogData.page - 1) * visitorLogData.per_page) + 1 : 0,
+    end: logs.length ? ((visitorLogData.page - 1) * visitorLogData.per_page) + logs.length : 0,
+  };
   logsPage.innerHTML = `
     <div class="detail-page-header">
       <div><p class="eyebrow">Restricted audit view</p><h2>Visitor Records</h2></div>
@@ -766,7 +889,7 @@ async function renderLogsPage() {
     <section class="admin-section">
       <header>
         <div><p class="eyebrow">Page access</p><h3>Recent Activity</h3></div>
-        <span class="tag">Showing ${logs.length} of ${visitorLogData.total || logs.length}</span>
+        <span class="tag">${visitorLogData.total || 0} records</span>
       </header>
       <div class="logs-table-wrap">
         <table class="logs-table">
@@ -788,8 +911,198 @@ async function renderLogsPage() {
           </tbody>
         </table>
       </div>
+      ${renderPagination("logs", logsPagination, "records")}
     </section>
   `;
+
+  logsPage.querySelectorAll('[data-record-page="logs"]').forEach((button) => {
+    button.addEventListener("click", () => {
+      logsPageNumber = Number(button.dataset.pageValue);
+      visitorLogData = null;
+      renderLogsPage();
+    });
+  });
+}
+
+function renderStatisticsPage() {
+  systemsView.classList.add("hidden");
+  developmentPanel.classList.add("hidden");
+  systemDetailPage.classList.add("hidden");
+  locationDetailPage.classList.add("hidden");
+  adminPage.classList.add("hidden");
+  logsPage.classList.add("hidden");
+  statisticsPage.classList.remove("hidden");
+  document.querySelectorAll(".nav-tab").forEach((button) => {
+    button.classList.toggle("active", button.dataset.view === "statistics");
+  });
+
+  const systems = state.systems;
+  const issues = systems.flatMap((system) => system.issues.map((issue) => ({
+    ...issue,
+    systemId: system.id,
+    systemName: system.name,
+    location: system.location,
+  })));
+  const visitRecords = systems.flatMap((system) => system.maintenance.map((record) => ({
+    ...record,
+    systemId: system.id,
+    systemName: system.name,
+    location: system.location,
+  })));
+  const siteVisits = groupSiteVisits(visitRecords);
+  const openIssues = issues.filter((issue) => issue.status !== "Closed");
+  const operational = systems.filter((system) => system.status === "Operational").length;
+  const availability = systems.length ? Math.round((operational / systems.length) * 100) : 0;
+  const recentCutoff = startOfDay(new Date());
+  recentCutoff.setDate(recentCutoff.getDate() - 90);
+  const recentVisits = siteVisits.filter((visit) => dateOnly(visit.date) >= recentCutoff).length;
+
+  const statusBars = ["Operational", "Needs Maintenance", "Offline", "Commissioning"].map((status) => ({
+    label: status,
+    value: systems.filter((system) => system.status === status).length,
+    className: getStatusClass(status),
+  }));
+  const relationBars = issueRelations.map((relation) => ({
+    label: relation,
+    value: issues.filter((issue) => splitList(issue.related_to).includes(relation)).length,
+  }));
+  const unclassifiedIssues = issues.filter((issue) => !splitList(issue.related_to).length).length;
+  if (unclassifiedIssues) relationBars.push({ label: "Not classified", value: unclassifiedIssues, className: "stat-muted" });
+
+  const purposeBars = visitCategories.map((purpose) => ({
+    label: purpose,
+    value: siteVisits.filter((visit) => visit.records.some((record) => splitList(record.type).includes(purpose))).length,
+    className: "stat-purpose",
+  }));
+  const unspecifiedVisits = siteVisits.filter((visit) => !visit.records.some((record) => splitList(record.type).length)).length;
+  if (unspecifiedVisits) purposeBars.push({ label: "Not specified", value: unspecifiedVisits, className: "stat-muted" });
+
+  const activityMonths = lastTwelveMonths();
+  const monthlyActivity = activityMonths.map((month) => ({
+    ...month,
+    visits: siteVisits.filter((visit) => monthKey(visit.date) === month.key).length,
+    issues: issues.filter((issue) => monthKey(issue.opened) === month.key).length,
+  }));
+  const activityMax = Math.max(1, ...monthlyActivity.flatMap((month) => [month.visits, month.issues]));
+
+  const locationRows = groupByLocation(systems).map(([location, locationSystems]) => {
+    const locationIssues = locationSystems.flatMap((system) => system.issues);
+    const locationVisits = groupSiteVisits(visitRecords.filter((record) => record.location === location));
+    const latestVisit = locationVisits[0]?.date || "";
+    return {
+      location,
+      systems: locationSystems.length,
+      openIssues: locationIssues.filter((issue) => issue.status !== "Closed").length,
+      visits: locationVisits.length,
+      latestVisit,
+    };
+  });
+
+  statisticsPage.innerHTML = `
+    <div class="section-header statistics-header">
+      <div><h2>Statistics</h2></div>
+      <span class="statistics-as-of">Updated ${formatDate(new Date())}</span>
+    </div>
+
+    <div class="metric-grid statistics-metric-grid" aria-label="Operations summary">
+      ${metricCard("Systems", systems.length)}
+      ${metricCard("Operational", `${operational}/${systems.length} (${availability}%)`)}
+      ${metricCard("Open Issues", openIssues.length)}
+      ${metricCard("Site Visits - 90 Days", recentVisits)}
+    </div>
+
+    <div class="statistics-grid">
+      <section class="statistics-section">
+        <header><div><p class="eyebrow">Current fleet</p><h3>System Status</h3></div><span class="tag">${systems.length} total</span></header>
+        ${renderStatBars(statusBars, "No systems are available.")}
+      </section>
+
+      <section class="statistics-section">
+        <header><p class="eyebrow">All recorded issues</p><span class="tag">${issues.length} issues</span></header>
+        ${renderStatBars(relationBars, "No issues have been recorded.")}
+      </section>
+
+      <section class="statistics-section statistics-wide">
+        <header><p class="eyebrow">Last 12 months</p><div class="statistics-legend"><span><i class="activity-key visits"></i>Site visits</span><span><i class="activity-key issues"></i>Issues opened</span></div></header>
+        ${renderActivityChart(monthlyActivity, activityMax)}
+      </section>
+
+      <section class="statistics-section statistics-wide">
+        <header><p class="eyebrow">Site visits summary</p><span class="tag">${siteVisits.length} visits</span></header>
+        ${renderStatBars(purposeBars, "No visits have been recorded.")}
+      </section>
+
+      <section class="statistics-section statistics-wide">
+        <header><h3>Location Comparison</h3><span class="tag">${locationRows.length} locations</span></header>
+        <div class="statistics-table-wrap">
+          <table class="statistics-table">
+            <thead><tr><th>Location</th><th>Systems</th><th>Open Issues</th><th>Site Visits</th><th>Latest Visit</th></tr></thead>
+            <tbody>
+              ${locationRows.length ? locationRows.map((row) => `
+                <tr><td><a href="/locations/${encodeURIComponent(row.location)}">${escapeHtml(row.location)}</a></td><td>${row.systems}</td><td>${row.openIssues}</td><td>${row.visits}</td><td>${formatDate(row.latestVisit)}</td></tr>
+              `).join("") : '<tr><td colspan="5">No location data is available.</td></tr>'}
+            </tbody>
+          </table>
+        </div>
+      </section>
+    </div>
+  `;
+}
+
+function renderStatBars(items, emptyMessage) {
+  const visibleItems = items.filter((item) => item.value > 0);
+  if (!visibleItems.length) return `<p class="statistics-empty">${escapeHtml(emptyMessage)}</p>`;
+  const maximum = Math.max(...visibleItems.map((item) => item.value), 1);
+  return `
+    <div class="stat-bar-list">
+      ${visibleItems.map((item) => `
+        <div class="stat-bar-row">
+          <span>${escapeHtml(item.label)}</span>
+          <div class="stat-bar-track"><i class="stat-bar-fill ${item.className || ""}" style="width: ${Math.max(3, (item.value / maximum) * 100)}%"></i></div>
+          <strong>${item.value}</strong>
+        </div>
+      `).join("")}
+    </div>
+  `;
+}
+
+function renderActivityChart(months, maximum) {
+  return `
+    <div class="activity-chart-wrap">
+      <div class="activity-chart" role="img" aria-label="Monthly site visits and issues opened over the last 12 months">
+        ${months.map((month) => `
+          <div class="activity-month">
+            <div class="activity-bars">
+              <i class="activity-bar visits" style="height: ${month.visits ? Math.max(6, (month.visits / maximum) * 100) : 0}%" title="${month.label}: ${month.visits} site visits"></i>
+              <i class="activity-bar issues" style="height: ${month.issues ? Math.max(6, (month.issues / maximum) * 100) : 0}%" title="${month.label}: ${month.issues} issues opened"></i>
+            </div>
+            <span>${escapeHtml(month.shortLabel)}</span>
+          </div>
+        `).join("")}
+      </div>
+    </div>
+  `;
+}
+
+function lastTwelveMonths() {
+  const today = new Date();
+  return Array.from({ length: 12 }, (_, index) => {
+    const date = new Date(today.getFullYear(), today.getMonth() - 11 + index, 1);
+    return {
+      key: `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, "0")}`,
+      label: date.toLocaleDateString("en", { month: "long", year: "numeric" }),
+      shortLabel: date.toLocaleDateString("en", { month: "short", year: "2-digit" }),
+    };
+  });
+}
+
+function monthKey(value) {
+  return /^\d{4}-\d{2}/.test(String(value || "")) ? String(value).slice(0, 7) : "";
+}
+
+function dateOnly(value) {
+  if (!value) return new Date(0);
+  return startOfDay(new Date(`${value}T00:00:00`));
 }
 
 function setSystemsNavActive() {
@@ -820,7 +1133,7 @@ function renderLocationIssues(issues) {
     <article class="issue-item issue-card-${getSeverityClass(normalizeSeverity(issue.severity))} ${issue.status === "Closed" ? "issue-card-closed" : ""}">
       <div class="item-header"><h3>${escapeHtml(issue.title)}</h3><a class="tag link-tag" href="/systems/${issue.systemId}">${escapeHtml(issue.systemName)}</a></div>
       <p>${escapeHtml(issue.notes || "No notes added.")}</p>
-      <div class="tag-row"><span class="tag severity-tag ${getSeverityClass(issue.severity)}">${escapeHtml(issue.severity)}</span><span class="tag ${issue.status === "Closed" ? "status-closed-tag" : ""}">${escapeHtml(issue.status)}</span><span class="tag">${formatDate(issue.opened)}</span></div>
+      <div class="tag-row"><span class="tag severity-tag ${getSeverityClass(issue.severity)}">${escapeHtml(issue.severity)}</span><span class="tag ${issue.status === "Closed" ? "status-closed-tag" : ""}">${escapeHtml(issue.status)}</span>${renderIssueRelationTags(issue)}<span class="tag">${formatDate(issue.opened)}</span></div>
     </article>
   `).join("");
 }
@@ -1234,6 +1547,7 @@ function issueFields(issue = {}) {
     field("opened", "Opened Date", "date", issue.opened || new Date().toISOString().slice(0, 10)),
     field("status", "Status", "select", issue.status || "Open", ["Open", "Closed"]),
     field("reported_by", "Reported By", "text", issue.reported_by || ""),
+    field("related_to", "Related To", "checkboxes", splitList(issue.related_to), issueRelations),
     field("notes", "Notes", "textarea", issue.notes || ""),
     field("resolution_notes", "Resolution Notes", "textarea", issue.resolution_notes || ""),
     field("closed_date", "Closed Date", "date", issue.closed_date || ""),
@@ -1359,12 +1673,19 @@ function renderIssueItems(issues, emptyMessage) {
       <div class="tag-row">
         <span class="tag severity-tag ${getSeverityClass(normalizeSeverity(issue.severity))}">${escapeHtml(normalizeSeverity(issue.severity))}</span>
         <span class="tag ${issue.status === "Closed" ? "status-closed-tag" : ""}">${escapeHtml(issue.status)}</span>
+        ${renderIssueRelationTags(issue)}
         <span class="tag">Reported by ${escapeHtml(issue.reported_by || "Unknown")}</span>
         <span class="tag">Opened ${formatDate(issue.opened)}</span>
         ${issue.closed_date ? `<span class="tag">Closed ${formatDate(issue.closed_date)}</span>` : ""}
       </div>
     </article>
   `).join("");
+}
+
+function renderIssueRelationTags(issue) {
+  const relations = splitList(issue.related_to);
+  if (!relations.length) return '<span class="tag issue-relation-tag">Not classified</span>';
+  return relations.map((relation) => `<span class="tag issue-relation-tag">${escapeHtml(relation)}</span>`).join("");
 }
 
 function eventMarkers(system, start, end) {
@@ -1426,7 +1747,7 @@ function assignMarkerLanes(events) {
   });
 }
 
-function timelineWindow(months = 6, offset = 0) {
+function timelineWindow(months = 12, offset = 0) {
   const end = addMonths(startOfDay(new Date()), offset);
   return { start: addMonths(end, -months), end };
 }
@@ -1488,7 +1809,7 @@ function bindTimelineControls(container, scope) {
         if (action === "previous") dashboardRangeOffset -= Math.max(1, Math.round(dashboardRangeMonths / 2));
         if (action === "next") dashboardRangeOffset += Math.max(1, Math.round(dashboardRangeMonths / 2));
         if (action === "reset") {
-          dashboardRangeMonths = 9;
+          dashboardRangeMonths = 12;
           dashboardRangeOffset = 0;
         }
         if (scope === "dashboard") renderTimeline();
@@ -1614,7 +1935,7 @@ function splitList(value) {
 
 function visitPurpose(value) {
   const purposes = splitList(value).filter((item) => visitCategories.includes(item));
-  return purposes.length ? purposes.join(", ") : "Unknown Reason";
+  return purposes.length ? purposes.join(", ") : "Not specified";
 }
 
 function addMonths(dateValue, months) {

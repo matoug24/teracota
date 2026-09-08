@@ -309,6 +309,12 @@ h2 {
   background: var(--muted);
 }
 
+.legend-dot.update {
+  border: 2px solid var(--text);
+  border-radius: 3px;
+  background: var(--surface);
+}
+
 .legend-dot.next {
   background: var(--cyan);
 }
@@ -492,6 +498,38 @@ h2 {
 .timeline-marker.issue {
   top: calc(50% + 22px + var(--marker-lane, 0) * 27px);
   background: var(--red);
+}
+
+.timeline-marker.update {
+  z-index: 3;
+  top: 50%;
+  display: flex;
+  width: auto;
+  height: 17px;
+  gap: 2px;
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+  box-shadow: none;
+}
+
+.update-symbol {
+  display: grid;
+  width: 17px;
+  height: 17px;
+  place-items: center;
+  border: 2px solid var(--cyan);
+  border-radius: 4px;
+  background: var(--surface);
+  color: var(--text);
+  font-size: 0.56rem;
+  font-style: normal;
+  font-weight: 900;
+  box-shadow: 0 1px 4px rgba(21, 37, 45, 0.24);
+}
+
+.update-symbol.update-calibration {
+  border-color: var(--amber);
 }
 
 .timeline-marker.next {
@@ -1040,6 +1078,82 @@ dialog::backdrop {
   display: flex;
   flex-wrap: wrap;
   gap: 8px;
+}
+
+.timeline-history-block {
+  display: grid;
+  gap: 8px;
+}
+
+.timeline-history-title {
+  color: var(--muted);
+  font-size: 0.74rem;
+  font-weight: 800;
+  text-transform: uppercase;
+}
+
+.timeline-history-heading {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.system-update-history {
+  border-top: 1px solid var(--line);
+  padding-top: 14px;
+}
+
+.system-update-list {
+  align-items: flex-start;
+}
+
+.system-update-history-item {
+  max-width: min(100%, 520px);
+  flex-wrap: wrap;
+}
+
+.update-history-dot {
+  width: 8px;
+  height: 8px;
+  flex: 0 0 8px;
+  border-radius: 2px;
+  background: var(--cyan);
+}
+
+.update-history-dot.update-calibration {
+  background: var(--amber);
+}
+
+.system-update-note {
+  max-width: 280px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.update-history-label {
+  display: flex;
+  align-items: center;
+  min-width: 0;
+  gap: 7px;
+}
+
+.update-history-label small {
+  color: var(--muted);
+  font-size: 0.76rem;
+}
+
+.update-manager-notes {
+  max-width: 220px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.update-history-empty {
+  margin: 3px 0 0;
+  line-height: 1.45;
 }
 
 .status-history-item {
@@ -2083,6 +2197,7 @@ button.task-item:hover {
     grid-template-columns: repeat(2, minmax(150px, 1fr));
   }
 }
+
 
 @media (max-width: 720px) {
   .topbar {

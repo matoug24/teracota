@@ -4,7 +4,7 @@
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <title>TeraCota Operations Tracker</title>
-    <link id="themeStylesheet" rel="stylesheet" href="/assets/{{ theme_css }}" />
+    <link id="themeStylesheet" rel="stylesheet" href="/assets/{{ theme_css }}?v=20260908-multi-updates" />
   </head>
   <body data-page="{{ initial_page }}" data-system-id="{{ initial_system_id }}" data-location="{{ initial_location }}">
     <div class="app-shell">
@@ -38,10 +38,10 @@
 
           <div class="metric-grid" id="metricGrid" aria-label="Fleet summary"></div>
           <div class="timeline-legend" aria-label="Timeline legend">
-            <div class="legend-group"><strong>Event Type</strong><span><i class="legend-dot visit"></i>Visit (V)</span><span><i class="legend-dot issue"></i>Issue (I)</span></div>
-            <div class="legend-group"><strong>Issue Severity</strong><span><i class="legend-dot issue-high"></i>High</span><span><i class="legend-dot issue-medium"></i>Medium</span><span><i class="legend-dot issue-low"></i>Low</span></div>
-            <div class="legend-group"><strong>Issue State</strong><span><i class="legend-dot closed"></i>Closed</span></div>
-            <div class="legend-group"><strong>System Status</strong><span><i class="legend-dot status-operational"></i>Operational</span><span><i class="legend-dot status-needs-maintenance"></i>Needs Maintenance</span><span><i class="legend-dot status-offline"></i>Offline</span><span><i class="legend-dot status-commissioning"></i>Commissioning</span></div>
+            <div class="legend-group"><strong>Event</strong><span><i class="legend-dot visit"></i>Visit (V)</span><span><i class="legend-dot issue"></i>Issue (I)</span><span><i class="legend-dot update"></i>Update (C/S)</span></div>
+            <div class="legend-group"><strong>Severity</strong><span><i class="legend-dot issue-high"></i>High</span><span><i class="legend-dot issue-medium"></i>Medium</span><span><i class="legend-dot issue-low"></i>Low</span></div>
+            <div class="legend-group"><strong>State</strong><span><i class="legend-dot closed"></i>Closed</span></div>
+            <div class="legend-group"><strong>Status</strong><span><i class="legend-dot status-operational"></i>Operational</span><span><i class="legend-dot status-needs-maintenance"></i>Needs Maintenance</span><span><i class="legend-dot status-offline"></i>Offline</span><span><i class="legend-dot status-commissioning"></i>Commissioning</span></div>
           </div>
           <div class="timeline-area" id="timelineArea" aria-label="System timeline"></div>
         </section>
@@ -86,6 +86,6 @@
       <div class="dialog-detail" id="detailDialogContent"></div>
     </dialog>
 
-    <script src="/assets/flask_app_v3.js?v=20260905-copy-layout"></script>
+    <script src="/assets/flask_app_v3.js?v=20260908-multi-updates"></script>
   </body>
 </html>

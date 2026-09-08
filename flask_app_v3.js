@@ -19,6 +19,7 @@ const initialSystemId = Number(document.body.dataset.systemId || 0);
 const initialLocation = document.body.dataset.location || "";
 const visitCategories = ["Calibration", "Alignment", "Commissioning", "Troubleshooting"];
 const issueRelations = ["Head", "HAS", "Fiber", "Optics", "Electronic", "Software", "Other"];
+const systemUpdateTypes = ["Software", "Calibration"];
 const systemRecordPageSize = 20;
 const logPageSize = 50;
 const themeOptions = [
@@ -77,6 +78,7 @@ document.addEventListener("click", (event) => {
   if (action === "maintenance") openDialog("maintenance");
   if (action === "siteVisit") openDialog("siteVisit");
   if (action === "issue") openDialog("systemIssue");
+  if (action === "systemUpdate") openDialog("systemUpdate");
   if (action === "editLocation") openDialog("editLocation", getCurrentLocation());
   if (action === "deleteSystem" && system) deleteItem("system", system.id);
 });
@@ -220,7 +222,7 @@ function render() {
 function applyTheme() {
   const theme = themeOptions.find((option) => option.id === state.theme) || themeOptions[0];
   const filename = theme.id === "standard" ? "flask_styles.css" : `flask_styles_${theme.id.replace("-", "_")}.css`;
-  const nextHref = `/assets/${filename}?v=20260905-statistics-pagination`;
+  const nextHref = `/assets/${filename}?v=20260908-multi-updates`;
   if (!themeStylesheet.href.endsWith(nextHref)) themeStylesheet.href = nextHref;
 }
 
@@ -410,6 +412,7 @@ function renderSystemDetailPage() {
         <button class="secondary-button" type="button" data-action="editSystem">Edit Info</button>
         <button class="primary-button" type="button" data-action="maintenance">Add Site Visit</button>
         <button class="secondary-button" type="button" data-action="issue">Report Issue</button>
+        <button class="secondary-button" type="button" data-action="systemUpdate">Record Update</button>
       </div>
     </div>
 
@@ -428,14 +431,18 @@ function renderSystemDetailPage() {
       </header>
       ${renderTimelineScale(fullTimeline.start, fullTimeline.end, "detail-timeline-scale")}
       ${renderTimelineRow(system, fullTimeline.start, fullTimeline.end)}
-      <div class="status-history-list" aria-label="Status history">
-        ${system.status_history.map((entry) => `
-          <span class="status-history-item">
-            <i class="status-dot ${getStatusClass(entry.status)}"></i>
-            ${escapeHtml(entry.status)} <small>from ${formatDate(entry.started_at)}</small>
-          </span>
-        `).join("")}
+      <div class="timeline-history-block">
+        <span class="timeline-history-title">System Status Changes</span>
+        <div class="status-history-list" aria-label="Status history">
+          ${system.status_history.map((entry) => `
+            <span class="status-history-item">
+              <i class="status-dot ${getStatusClass(entry.status)}"></i>
+              ${escapeHtml(entry.status)} <small>from ${formatDate(entry.started_at)}</small>
+            </span>
+          `).join("")}
+        </div>
       </div>
+      ${renderSystemUpdateHistory(system.updates || [])}
       <div class="timeline-summary">
         <div><span>Open Issues</span><strong>${openIssueCount}</strong></div>
         <div><span>Total Issues</span><strong>${system.issues.length}</strong></div>
@@ -479,6 +486,15 @@ function renderSystemDetailPage() {
 }
 
 function bindSystemDetailActions(system) {
+  systemDetailPage.querySelectorAll("[data-edit-system-update]").forEach((button) => {
+    button.addEventListener("click", () => {
+      const update = system.updates.find((item) => item.id === Number(button.dataset.editSystemUpdate));
+      openDialog("editSystemUpdate", update);
+    });
+  });
+  systemDetailPage.querySelectorAll("[data-delete-system-update]").forEach((button) => {
+    button.addEventListener("click", () => deleteItem("systemUpdate", Number(button.dataset.deleteSystemUpdate)));
+  });
   systemDetailPage.querySelectorAll("[data-edit-maintenance]").forEach((button) => {
     button.addEventListener("click", () => {
       const record = system.maintenance.find((item) => item.id === Number(button.dataset.editMaintenance));
@@ -1301,6 +1317,14 @@ function openDialog(mode, item = null) {
       title: "Edit Issue",
       fields: issueFields(item),
     },
+    systemUpdate: {
+      title: `Record Update - ${system?.name || "System"}`,
+      fields: systemUpdateFields(),
+    },
+    editSystemUpdate: {
+      title: "Edit Update Record",
+      fields: systemUpdateFields(item),
+    },
     task: {
       title: "Add Development Item",
       fields: taskFields(),
@@ -1317,6 +1341,10 @@ function openDialog(mode, item = null) {
   if (mode === "editSystem") {
     dialogFields.insertAdjacentHTML("beforeend", renderStatusHistoryManager(item || system));
     bindStatusHistoryManager();
+  }
+  if (mode === "systemUpdate") {
+    dialogFields.insertAdjacentHTML("beforeend", renderSystemUpdateManager(system));
+    bindSystemUpdateManager(system);
   }
   entryDialog.showModal();
 }
@@ -1374,6 +1402,22 @@ async function saveDialog() {
       await sendJson(`/api/issues/${editingItem.id}`, { method: "PUT", body: JSON.stringify(data) });
     }
 
+    if (dialogMode === "systemUpdate" && system) {
+      if (!data.update_type || (Array.isArray(data.update_type) && !data.update_type.length)) {
+        showFormError("Select at least one update type.");
+        return;
+      }
+      await sendJson(`/api/systems/${system.id}/updates`, { method: "POST", body: JSON.stringify(data) });
+    }
+
+    if (dialogMode === "editSystemUpdate" && editingItem) {
+      if (!data.update_type || (Array.isArray(data.update_type) && !data.update_type.length)) {
+        showFormError("Select at least one update type.");
+        return;
+      }
+      await sendJson(`/api/system-updates/${editingItem.id}`, { method: "PUT", body: JSON.stringify(data) });
+    }
+
     if (dialogMode === "task") {
       await sendJson("/api/tasks", { method: "POST", body: JSON.stringify(data) });
     }
@@ -1406,6 +1450,7 @@ async function deleteItem(type, id) {
     maintenance: "visit record",
     siteVisit: "site visit and all linked system records",
     issue: "issue",
+    systemUpdate: "update record",
     task: "development item",
     statusHistory: "status event",
   };
@@ -1420,6 +1465,7 @@ async function deleteItem(type, id) {
     maintenance: `/api/maintenance/${id}`,
     siteVisit: `/api/site-visits/${id}`,
     issue: `/api/issues/${id}`,
+    systemUpdate: `/api/system-updates/${id}`,
     task: `/api/tasks/${id}`,
     statusHistory: `/api/status-history/${id}`,
   };
@@ -1497,6 +1543,50 @@ function bindStatusHistoryManager() {
   });
 }
 
+function renderSystemUpdateManager(system) {
+  const updates = system?.updates || [];
+  return `
+    <section class="dialog-history-manager">
+      <div class="dialog-subheader">
+        <div><span>Update History</span><strong>Edit or remove calibration and software updates</strong></div>
+        <span class="tag">${updates.length} records</span>
+      </div>
+      <div class="dialog-history-list">
+        ${updates.length ? updates.map((update) => `
+          <div class="dialog-history-row">
+            <span class="update-history-label">
+              ${renderUpdateDots(update.update_type)}
+              <strong>${escapeHtml(updateTypeLabel(update.update_type))}</strong>
+              <small>${formatDate(update.date)}</small>
+              ${update.notes ? `<small class="update-manager-notes" title="${escapeAttribute(update.notes)}">${escapeHtml(update.notes)}</small>` : ""}
+            </span>
+            <div class="item-actions">
+              <button class="secondary-button" type="button" data-edit-system-update="${update.id}">Edit</button>
+              <button class="danger-button" type="button" data-delete-system-update="${update.id}">Delete</button>
+            </div>
+          </div>
+        `).join("") : '<p class="muted update-history-empty">No update records yet.</p>'}
+      </div>
+    </section>
+  `;
+}
+
+function bindSystemUpdateManager(system) {
+  dialogFields.querySelectorAll("[data-edit-system-update]").forEach((button) => {
+    button.addEventListener("click", () => {
+      const update = system?.updates?.find((item) => item.id === Number(button.dataset.editSystemUpdate));
+      entryDialog.close();
+      openDialog("editSystemUpdate", update);
+    });
+  });
+  dialogFields.querySelectorAll("[data-delete-system-update]").forEach((button) => {
+    button.addEventListener("click", () => {
+      entryDialog.close();
+      deleteItem("systemUpdate", Number(button.dataset.deleteSystemUpdate));
+    });
+  });
+}
+
 function locationFields(location = {}) {
   location = location || {};
   return [
@@ -1551,6 +1641,15 @@ function issueFields(issue = {}) {
     field("notes", "Notes", "textarea", issue.notes || ""),
     field("resolution_notes", "Resolution Notes", "textarea", issue.resolution_notes || ""),
     field("closed_date", "Closed Date", "date", issue.closed_date || ""),
+  ];
+}
+
+function systemUpdateFields(update = {}) {
+  update = update || {};
+  return [
+    field("date", "Update Date", "date", update.date || new Date().toISOString().slice(0, 10)),
+    field("update_type", "What Was Updated", "checkboxes", splitList(update.update_type), systemUpdateTypes),
+    field("notes", "Notes (version, colors, etc.)", "textarea", update.notes || ""),
   ];
 }
 
@@ -1688,6 +1787,49 @@ function renderIssueRelationTags(issue) {
   return relations.map((relation) => `<span class="tag issue-relation-tag">${escapeHtml(relation)}</span>`).join("");
 }
 
+function renderSystemUpdateHistory(updates) {
+  return `
+    <div class="timeline-history-block system-update-history">
+      <div class="timeline-history-heading">
+        <span class="timeline-history-title">Calibration &amp; Software Updates</span>
+        <span class="tag">${updates.length}</span>
+      </div>
+      ${updates.length ? `
+        <div class="status-history-list system-update-list">
+          ${updates.map((update) => `
+            <span class="status-history-item system-update-history-item" title="${escapeAttribute(update.notes || "No notes added.")}">
+              ${renderUpdateDots(update.update_type)}
+              ${escapeHtml(updateTypeLabel(update.update_type))} <small>${formatDate(update.date)}</small>
+              ${update.notes ? `<small class="system-update-note">${escapeHtml(update.notes)}</small>` : ""}
+            </span>
+          `).join("")}
+        </div>
+      ` : '<p class="muted update-history-empty">No calibration or software updates recorded.</p>'}
+    </div>
+  `;
+}
+
+function selectedUpdateTypes(value) {
+  return splitList(value).filter((type) => systemUpdateTypes.includes(type));
+}
+
+function updateTypeLabel(value) {
+  const types = selectedUpdateTypes(value);
+  return types.length ? types.join(" + ") : "Update";
+}
+
+function renderUpdateDots(value) {
+  return selectedUpdateTypes(value)
+    .map((type) => `<i class="update-history-dot update-${type.toLowerCase()}" title="${escapeAttribute(type)}"></i>`)
+    .join("");
+}
+
+function renderUpdateSymbols(types) {
+  return types.map((type) => `
+    <i class="update-symbol update-${type.toLowerCase()}">${type === "Calibration" ? "C" : "S"}</i>
+  `).join("");
+}
+
 function eventMarkers(system, start, end) {
   const events = [];
   system.maintenance.forEach((record) => {
@@ -1708,6 +1850,17 @@ function eventMarkers(system, start, end) {
       statusClass: issue.status === "Closed" ? "closed" : "open",
       label: "I",
       title: `${issue.status} ${issue.severity} issue - ${formatDate(issue.opened)} - ${issue.title}`,
+    });
+  });
+  (system.updates || []).forEach((update) => {
+    const types = selectedUpdateTypes(update.update_type);
+    events.push({
+      date: update.date,
+      kind: "update",
+      severityClass: types.length > 1 ? "multiple" : "",
+      statusClass: "",
+      label: renderUpdateSymbols(types),
+      title: `${updateTypeLabel(update.update_type)} update - ${formatDate(update.date)} - ${update.notes || "No notes"}`,
     });
   });
 
@@ -1737,7 +1890,7 @@ function statusSegments(system, start, end) {
 }
 
 function assignMarkerLanes(events) {
-  const laneEnds = { visit: [], issue: [] };
+  const laneEnds = { visit: [], issue: [], update: [] };
   return events.map((event) => {
     const lanes = laneEnds[event.kind];
     let lane = lanes.findIndex((lastPosition) => event.left - lastPosition >= 3.5);
@@ -1756,6 +1909,7 @@ function fullTimelineWindow(system) {
   const dates = [
     ...system.maintenance.map((record) => record.date),
     ...system.issues.map((issue) => issue.opened),
+    ...(system.updates || []).map((update) => update.date),
     ...(system.status_history || []).map((entry) => entry.started_at),
   ].filter(Boolean).map((value) => startOfDay(new Date(`${value}T00:00:00`)));
 

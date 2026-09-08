@@ -62,12 +62,14 @@ EXPORT_TABLES = (
     "site_visits",
     "maintenance_records",
     "system_issues",
+    "system_updates",
     "development_tasks",
     "system_status_history",
     "locations",
     "app_settings",
     "deleted_items",
 )
+OPTIONAL_IMPORT_TABLES = {"system_updates"}
 
 
 def get_db():
@@ -189,6 +191,18 @@ def init_db():
     )
     execute(
         """
+        CREATE TABLE IF NOT EXISTS system_updates (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            system_id INTEGER NOT NULL,
+            date TEXT NOT NULL,
+            update_type TEXT NOT NULL,
+            notes TEXT,
+            FOREIGN KEY (system_id) REFERENCES systems (id)
+        )
+        """
+    )
+    execute(
+        """
         CREATE TABLE IF NOT EXISTS locations (
             name TEXT PRIMARY KEY,
             contacts TEXT NOT NULL DEFAULT '',
@@ -237,6 +251,7 @@ def init_db():
     )
     execute("CREATE INDEX IF NOT EXISTS idx_deleted_items_deleted_at ON deleted_items (deleted_at DESC)")
     execute("CREATE INDEX IF NOT EXISTS idx_visitor_logs_visited_at ON visitor_logs (visited_at DESC)")
+    execute("CREATE INDEX IF NOT EXISTS idx_system_updates_system_date ON system_updates (system_id, date DESC)")
     if env_flag("TERACOTA_SEED_DEMO", not PRODUCTION):
         seed_db()
     sync_locations()
@@ -394,6 +409,12 @@ def load_state():
             "SELECT * FROM system_status_history WHERE system_id = ? ORDER BY started_at, id",
             (system["id"],),
         )
+        system["updates"] = query_all(
+            "SELECT * FROM system_updates WHERE system_id = ? ORDER BY date DESC, id DESC",
+            (system["id"],),
+        )
+        for update in system["updates"]:
+            update["update_type"] = clean_update_types(update["update_type"])
 
     tasks = query_all("SELECT * FROM development_tasks ORDER BY category, created_at DESC, id DESC")
     locations = query_all("SELECT * FROM locations ORDER BY display_rank, name")
@@ -506,9 +527,8 @@ def record_page_visit():
         "admin_page",
         "logs_page",
         "statistics_page",
-        "login_page",
     }
-    if request.method != "GET" or request.endpoint not in page_endpoints:
+    if not is_authenticated() or request.method != "GET" or request.endpoint not in page_endpoints:
         return None
     user_agent = request.headers.get("User-Agent", "")
     device, browser, platform = visitor_details(user_agent)
@@ -528,7 +548,7 @@ def record_page_visit():
                 browser,
                 platform,
                 user_agent,
-                LOGIN_USERNAME if is_authenticated() else "Unauthenticated",
+                LOGIN_USERNAME,
             ),
         )
     except sqlite3.Error:
@@ -724,6 +744,18 @@ def clean_system_status(value):
     return status if status in allowed else "Operational"
 
 
+def clean_update_types(value):
+    allowed = ("Software", "Calibration")
+    lookup = {item.lower(): item for item in allowed}
+    values = value if isinstance(value, list) else str(value or "").split(",")
+    selected = []
+    for item in values:
+        normalized = lookup.get(str(item).strip().lower())
+        if normalized and normalized not in selected:
+            selected.append(normalized)
+    return ", ".join(selected)
+
+
 def get_active_theme():
     setting = query_one("SELECT value FROM app_settings WHERE key = 'theme'")
     theme = setting["value"] if setting else "standard"
@@ -904,6 +936,7 @@ def health_check():
     try:
         query_one("SELECT id FROM systems LIMIT 1")
         query_one("SELECT related_to FROM system_issues LIMIT 1")
+        query_one("SELECT id FROM system_updates LIMIT 1")
         query_one("SELECT id FROM visitor_logs LIMIT 1")
     except sqlite3.Error:
         app.logger.exception("TeraCota database health check failed")
@@ -988,7 +1021,7 @@ def import_database_csv():
     except (json.JSONDecodeError, ValueError) as error:
         return jsonify({"message": f"Invalid backup: {error}"}), 400
 
-    missing_tables = set(EXPORT_TABLES) - table_markers
+    missing_tables = set(EXPORT_TABLES) - table_markers - OPTIONAL_IMPORT_TABLES
     if missing_tables:
         return jsonify(
             {"message": f"Backup is missing table markers: {', '.join(sorted(missing_tables))}"}
@@ -1126,6 +1159,7 @@ def delete_system(system_id):
     ]
     execute("DELETE FROM maintenance_records WHERE system_id = ?", (system_id,))
     execute("DELETE FROM system_issues WHERE system_id = ?", (system_id,))
+    execute("DELETE FROM system_updates WHERE system_id = ?", (system_id,))
     execute("DELETE FROM system_status_history WHERE system_id = ?", (system_id,))
     execute("DELETE FROM systems WHERE id = ?", (system_id,))
     for visit_id in visit_ids:
@@ -1166,6 +1200,64 @@ def delete_status_history(history_id):
         return jsonify({"message": "A system must keep at least one status event"}), 400
     execute("DELETE FROM system_status_history WHERE id = ?", (history_id,))
     sync_current_status(history["system_id"])
+    return jsonify(load_state())
+
+
+@app.route("/api/systems/<int:system_id>/updates", methods=["POST"])
+def create_system_update(system_id):
+    require_login()
+    if not query_one("SELECT id FROM systems WHERE id = ?", (system_id,)):
+        abort(404)
+    payload = request.get_json(force=True)
+    update_types = clean_update_types(payload.get("update_type"))
+    if not update_types:
+        return jsonify({"message": "Select at least one update type"}), 400
+    execute(
+        """
+        INSERT INTO system_updates (system_id, date, update_type, notes)
+        VALUES (?, ?, ?, ?)
+        """,
+        (
+            system_id,
+            clean(payload.get("date"), today_iso()),
+            update_types,
+            clean(payload.get("notes")),
+        ),
+    )
+    return jsonify(load_state())
+
+
+@app.route("/api/system-updates/<int:update_id>", methods=["PUT"])
+def update_system_update(update_id):
+    require_login()
+    if not query_one("SELECT id FROM system_updates WHERE id = ?", (update_id,)):
+        abort(404)
+    payload = request.get_json(force=True)
+    update_types = clean_update_types(payload.get("update_type"))
+    if not update_types:
+        return jsonify({"message": "Select at least one update type"}), 400
+    execute(
+        """
+        UPDATE system_updates
+        SET date = ?, update_type = ?, notes = ?
+        WHERE id = ?
+        """,
+        (
+            clean(payload.get("date"), today_iso()),
+            update_types,
+            clean(payload.get("notes")),
+            update_id,
+        ),
+    )
+    return jsonify(load_state())
+
+
+@app.route("/api/system-updates/<int:update_id>", methods=["DELETE"])
+def delete_system_update(update_id):
+    require_login()
+    if not query_one("SELECT id FROM system_updates WHERE id = ?", (update_id,)):
+        abort(404)
+    execute("DELETE FROM system_updates WHERE id = ?", (update_id,))
     return jsonify(load_state())
 
 

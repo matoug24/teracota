@@ -234,7 +234,7 @@ function render() {
 function applyTheme() {
   const theme = themeOptions.find((option) => option.id === state.theme) || themeOptions[0];
   const filename = theme.id === "standard" ? "flask_styles.css" : `flask_styles_${theme.id.replace("-", "_")}.css`;
-  const nextHref = `/assets/${filename}?v=20260914-issues-updates`;
+  const nextHref = `/assets/${filename}?v=20260914-shared-issues`;
   if (!themeStylesheet.href.endsWith(nextHref)) themeStylesheet.href = nextHref;
 }
 
@@ -273,10 +273,8 @@ function setEditVisibility() {
 
 function renderMetrics() {
   const systems = state.systems;
-  const openIssues = systems.reduce(
-    (total, system) => total + system.issues.filter((issue) => issue.status !== "Closed").length,
-    0,
-  );
+  const openIssues = uniqueItemsById(systems.flatMap((system) => system.issues))
+    .filter((issue) => issue.status !== "Closed").length;
   const metrics = [
     ["Systems", systems.length],
     ["Open Issues", openIssues],
@@ -610,7 +608,7 @@ function renderLocationDetailPage() {
 
   const location = getCurrentLocation();
   const systems = state.systems.filter((system) => system.location === initialLocation);
-  const issues = systems.flatMap((system) => system.issues.map((issue) => ({ ...issue, systemName: system.name, systemId: system.id })));
+  const issues = uniqueItemsById(systems.flatMap((system) => system.issues));
   const visits = systems.flatMap((system) => system.maintenance.map((visit) => ({ ...visit, systemName: system.name, systemId: system.id })));
   const siteVisits = groupSiteVisits(visits);
   issues.sort((a, b) => String(b.opened).localeCompare(String(a.opened)));
@@ -1006,12 +1004,12 @@ function renderStatisticsPage() {
   });
 
   const systems = state.systems;
-  const issues = systems.flatMap((system) => system.issues.map((issue) => ({
+  const issues = uniqueItemsById(systems.flatMap((system) => system.issues.map((issue) => ({
     ...issue,
     systemId: system.id,
     systemName: system.name,
     location: system.location,
-  })));
+  }))));
   const visitRecords = systems.flatMap((system) => system.maintenance.map((record) => ({
     ...record,
     systemId: system.id,
@@ -1055,7 +1053,7 @@ function renderStatisticsPage() {
   const activityMax = Math.max(1, ...monthlyActivity.flatMap((month) => [month.visits, month.issues]));
 
   const locationRows = groupByLocation(systems).map(([location, locationSystems]) => {
-    const locationIssues = locationSystems.flatMap((system) => system.issues);
+    const locationIssues = uniqueItemsById(locationSystems.flatMap((system) => system.issues));
     const locationVisits = groupSiteVisits(visitRecords.filter((record) => record.location === location));
     const latestVisit = locationVisits[0]?.date || "";
     return {
@@ -1200,7 +1198,7 @@ function renderLocationIssues(issues) {
   if (!issues.length) return '<div class="issue-item"><h3>No issues</h3><p>No issues recorded at this location.</p></div>';
   return issues.map((issue) => `
     <article class="issue-item issue-card-${getSeverityClass(normalizeSeverity(issue.severity))} ${issue.status === "Closed" ? "issue-card-closed" : ""}">
-      <div class="item-header"><h3>${escapeHtml(issue.title)}</h3><a class="tag link-tag" href="/systems/${issue.systemId}">${escapeHtml(issue.systemName)}</a></div>
+      <div class="item-header"><h3>${escapeHtml(issue.title)}</h3><div class="issue-system-links">${renderIssueSystemLinks(issue)}</div></div>
       <p>${escapeHtml(issue.notes || "No notes added.")}</p>
       <div class="tag-row"><span class="tag severity-tag ${getSeverityClass(issue.severity)}">${escapeHtml(issue.severity)}</span><span class="tag ${issue.status === "Closed" ? "status-closed-tag" : ""}">${escapeHtml(issue.status)}</span>${renderIssueRelationTags(issue)}<span class="tag">${formatDate(issue.opened)}</span></div>
     </article>
@@ -1364,11 +1362,15 @@ function openDialog(mode, item = null) {
     },
     systemIssue: {
       title: `Report Issue - ${system?.name || "System"}`,
-      fields: issueFields(),
+      fields: issueFields({}, system ? [system.id] : [], system?.location || ""),
     },
     editIssue: {
       title: "Edit Issue",
-      fields: issueFields(item),
+      fields: issueFields(
+        item,
+        item?.linked_system_ids || (system ? [system.id] : []),
+        system?.location || "",
+      ),
     },
     systemUpdate: {
       title: `Record Update - ${system?.location || "Location"}`,
@@ -1452,10 +1454,18 @@ async function saveDialog() {
     }
 
     if (dialogMode === "systemIssue" && system) {
+      if (!data.system_ids || (Array.isArray(data.system_ids) && !data.system_ids.length)) {
+        showFormError("Select at least one system.");
+        return;
+      }
       await sendJson(`/api/systems/${system.id}/issues`, { method: "POST", body: JSON.stringify(data) });
     }
 
     if (dialogMode === "editIssue" && editingItem) {
+      if (!data.system_ids || (Array.isArray(data.system_ids) && !data.system_ids.length)) {
+        showFormError("Select at least one system.");
+        return;
+      }
       await sendJson(`/api/issues/${editingItem.id}`, { method: "PUT", body: JSON.stringify(data) });
     }
 
@@ -1692,7 +1702,7 @@ function siteVisitFields(visit = {}) {
   ];
 }
 
-function issueFields(issue = {}) {
+function issueFields(issue = {}, selectedSystemIds = [], location = "") {
   issue = issue || {};
   return [
     field("title", "Title", "text", issue.title || ""),
@@ -1700,6 +1710,13 @@ function issueFields(issue = {}) {
     field("opened", "Opened Date", "date", issue.opened || new Date().toISOString().slice(0, 10)),
     field("status", "Status", "select", issue.status || "Open", ["Open", "Closed"]),
     field("reported_by", "Reported By", "text", issue.reported_by || ""),
+    field(
+      "system_ids",
+      "Systems Affected",
+      "checkboxes",
+      selectedSystemIds.map(String),
+      systemsAtLocation(location).map((system) => ({ value: String(system.id), label: system.name })),
+    ),
     field("related_to", "Related To", "checkboxes", splitList(issue.related_to), issueRelations),
     field("notes", "Notes", "textarea", issue.notes || ""),
     field("resolution_notes", "Resolution Notes", "textarea", issue.resolution_notes || ""),
@@ -1849,6 +1866,7 @@ function renderIssueItems(issues, emptyMessage) {
         <span class="tag severity-tag ${getSeverityClass(normalizeSeverity(issue.severity))}">${escapeHtml(normalizeSeverity(issue.severity))}</span>
         <span class="tag ${issue.status === "Closed" ? "status-closed-tag" : ""}">${escapeHtml(issue.status)}</span>
         ${renderIssueRelationTags(issue)}
+        ${renderIssueSystemTag(issue)}
         <span class="tag">Reported by ${escapeHtml(issue.reported_by || "Unknown")}</span>
         <span class="tag">Opened ${formatDate(issue.opened)}</span>
         ${issue.closed_date ? `<span class="tag">Closed ${formatDate(issue.closed_date)}</span>` : ""}
@@ -1896,6 +1914,23 @@ function renderIssueRelationTags(issue) {
   const relations = splitList(issue.related_to);
   if (!relations.length) return '<span class="tag issue-relation-tag">Not classified</span>';
   return relations.map((relation) => `<span class="tag issue-relation-tag">${escapeHtml(relation)}</span>`).join("");
+}
+
+function systemsLinkedToIssue(issue) {
+  const linkedIds = new Set((issue.linked_system_ids || [issue.system_id]).map(Number));
+  return state.systems.filter((system) => linkedIds.has(system.id));
+}
+
+function renderIssueSystemTag(issue) {
+  const systems = systemsLinkedToIssue(issue);
+  if (systems.length <= 1) return "";
+  return `<span class="tag shared-issue-tag">Systems: ${systems.map((system) => escapeHtml(system.name)).join(", ")}</span>`;
+}
+
+function renderIssueSystemLinks(issue) {
+  return systemsLinkedToIssue(issue).map((system) => `
+    <a class="tag link-tag" href="/systems/${system.id}">${escapeHtml(system.name)}</a>
+  `).join("");
 }
 
 function renderSystemUpdateHistory(updates) {
@@ -2228,6 +2263,10 @@ function groupByLocation(systems) {
     const rankB = ranks.has(locationB) ? ranks.get(locationB) : Number.MAX_SAFE_INTEGER;
     return rankA - rankB || locationA.localeCompare(locationB);
   });
+}
+
+function uniqueItemsById(items) {
+  return [...new Map(items.map((item) => [item.id, item])).values()];
 }
 
 function getCurrentSystem() {

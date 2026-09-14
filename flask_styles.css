@@ -718,6 +718,17 @@ h2 {
   margin-top: 10px;
 }
 
+.issue-system-links {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: 6px;
+}
+
+.shared-issue-tag {
+  border-color: var(--cyan);
+}
+
 .site-visit-item {
   display: grid;
   gap: 12px;

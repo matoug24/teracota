@@ -62,6 +62,7 @@ EXPORT_TABLES = (
     "site_visits",
     "maintenance_records",
     "system_issues",
+    "system_issue_links",
     "system_updates",
     "development_tasks",
     "system_status_history",
@@ -69,7 +70,7 @@ EXPORT_TABLES = (
     "app_settings",
     "deleted_items",
 )
-OPTIONAL_IMPORT_TABLES = {"system_updates"}
+OPTIONAL_IMPORT_TABLES = {"system_issue_links", "system_updates"}
 
 
 def get_db():
@@ -177,6 +178,17 @@ def init_db():
     ensure_column("system_issues", "resolution_notes", "TEXT NOT NULL DEFAULT ''")
     ensure_column("system_issues", "closed_date", "TEXT NOT NULL DEFAULT ''")
     ensure_column("system_issues", "related_to", "TEXT NOT NULL DEFAULT ''")
+    execute(
+        """
+        CREATE TABLE IF NOT EXISTS system_issue_links (
+            issue_id INTEGER NOT NULL,
+            system_id INTEGER NOT NULL,
+            PRIMARY KEY (issue_id, system_id),
+            FOREIGN KEY (issue_id) REFERENCES system_issues (id) ON DELETE CASCADE,
+            FOREIGN KEY (system_id) REFERENCES systems (id) ON DELETE CASCADE
+        )
+        """
+    )
     ensure_column("maintenance_records", "visit_id", "INTEGER")
     execute(
         """
@@ -254,8 +266,10 @@ def init_db():
     execute("CREATE INDEX IF NOT EXISTS idx_deleted_items_deleted_at ON deleted_items (deleted_at DESC)")
     execute("CREATE INDEX IF NOT EXISTS idx_visitor_logs_visited_at ON visitor_logs (visited_at DESC)")
     execute("CREATE INDEX IF NOT EXISTS idx_system_updates_system_date ON system_updates (system_id, date DESC)")
+    execute("CREATE INDEX IF NOT EXISTS idx_system_issue_links_system ON system_issue_links (system_id, issue_id)")
     if env_flag("TERACOTA_SEED_DEMO", not PRODUCTION):
         seed_db()
+    backfill_issue_links()
     sync_locations()
     normalize_location_ranks()
     backfill_status_history()
@@ -402,12 +416,25 @@ def load_state():
         for record in system["maintenance"]:
             record["type"] = clean_categories(record["type"])
         system["issues"] = query_all(
-            "SELECT * FROM system_issues WHERE system_id = ? ORDER BY opened DESC, id DESC",
+            """
+            SELECT system_issues.*
+            FROM system_issues
+            JOIN system_issue_links ON system_issue_links.issue_id = system_issues.id
+            WHERE system_issue_links.system_id = ?
+            ORDER BY system_issues.opened DESC, system_issues.id DESC
+            """,
             (system["id"],),
         )
         for issue in system["issues"]:
             issue["severity"] = clean_severity(issue["severity"])
             issue["related_to"] = clean_issue_relations(issue.get("related_to"))
+            issue["linked_system_ids"] = [
+                row["system_id"]
+                for row in query_all(
+                    "SELECT system_id FROM system_issue_links WHERE issue_id = ? ORDER BY system_id",
+                    (issue["id"],),
+                )
+            ]
         system["status_history"] = query_all(
             "SELECT * FROM system_status_history WHERE system_id = ? ORDER BY started_at, id",
             (system["id"],),
@@ -659,9 +686,18 @@ def restore_deleted_record(db, deleted_item):
         issue = payload.get("issue")
         if not isinstance(issue, dict):
             return None, "The archived issue is incomplete"
-        if not db.execute("SELECT 1 FROM systems WHERE id = ?", (issue.get("system_id"),)).fetchone():
+        system_ids = clean_system_ids(payload.get("system_ids")) or [issue.get("system_id")]
+        if any(
+            not db.execute("SELECT 1 FROM systems WHERE id = ?", (system_id,)).fetchone()
+            for system_id in system_ids
+        ):
             return None, "Restore the related system before restoring this issue"
-        insert_database_row(db, "system_issues", issue)
+        issue["system_id"] = system_ids[0]
+        restored_issue_id = insert_database_row(db, "system_issues", issue)
+        db.executemany(
+            "INSERT OR IGNORE INTO system_issue_links (issue_id, system_id) VALUES (?, ?)",
+            [(restored_issue_id, system_id) for system_id in system_ids],
+        )
         return [], None
 
     if item_type not in ("visit", "site_visit"):
@@ -819,6 +855,15 @@ def normalize_location_ranks():
         db.commit()
 
 
+def backfill_issue_links():
+    execute(
+        """
+        INSERT OR IGNORE INTO system_issue_links (issue_id, system_id)
+        SELECT id, system_id FROM system_issues
+        """
+    )
+
+
 def backfill_status_history():
     for system in query_all("SELECT id, status FROM systems"):
         if query_one("SELECT id FROM system_status_history WHERE system_id = ? LIMIT 1", (system["id"],)):
@@ -829,7 +874,10 @@ def backfill_status_history():
             FROM (
                 SELECT date AS activity_date FROM maintenance_records WHERE system_id = ?
                 UNION ALL
-                SELECT opened AS activity_date FROM system_issues WHERE system_id = ?
+                SELECT system_issues.opened AS activity_date
+                FROM system_issues
+                JOIN system_issue_links ON system_issue_links.issue_id = system_issues.id
+                WHERE system_issue_links.system_id = ?
             )
             """,
             (system["id"], system["id"]),
@@ -949,6 +997,7 @@ def health_check():
     try:
         query_one("SELECT id FROM systems LIMIT 1")
         query_one("SELECT related_to FROM system_issues LIMIT 1")
+        query_one("SELECT issue_id FROM system_issue_links LIMIT 1")
         query_one("SELECT id FROM system_updates LIMIT 1")
         query_one("SELECT id FROM visitor_logs LIMIT 1")
     except sqlite3.Error:
@@ -1068,6 +1117,7 @@ def import_database_csv():
     finally:
         db.close()
 
+    backfill_issue_links()
     sync_locations()
     normalize_location_ranks()
     backfill_status_history()
@@ -1170,8 +1220,27 @@ def delete_system(system_id):
             (system_id,),
         )
     ]
+    linked_issue_ids = [
+        row["issue_id"]
+        for row in query_all(
+            "SELECT issue_id FROM system_issue_links WHERE system_id = ?",
+            (system_id,),
+        )
+    ]
+    for issue_id in linked_issue_ids:
+        replacement = query_one(
+            "SELECT system_id FROM system_issue_links WHERE issue_id = ? AND system_id <> ? ORDER BY system_id LIMIT 1",
+            (issue_id, system_id),
+        )
+        if replacement:
+            execute(
+                "UPDATE system_issues SET system_id = ? WHERE id = ? AND system_id = ?",
+                (replacement["system_id"], issue_id, system_id),
+            )
+        else:
+            execute("DELETE FROM system_issues WHERE id = ?", (issue_id,))
+    execute("DELETE FROM system_issue_links WHERE system_id = ?", (system_id,))
     execute("DELETE FROM maintenance_records WHERE system_id = ?", (system_id,))
-    execute("DELETE FROM system_issues WHERE system_id = ?", (system_id,))
     execute("DELETE FROM system_updates WHERE system_id = ?", (system_id,))
     execute("DELETE FROM system_status_history WHERE system_id = ?", (system_id,))
     execute("DELETE FROM systems WHERE id = ?", (system_id,))
@@ -1449,34 +1518,55 @@ def delete_maintenance(record_id):
 def create_issue(system_id):
     require_login()
     payload = request.get_json(force=True)
+    current_system = query_one("SELECT id, location FROM systems WHERE id = ?", (system_id,))
+    if not current_system:
+        abort(404)
+    system_ids = clean_system_ids(payload.get("system_ids")) or [system_id]
+    placeholders = ",".join("?" for _ in system_ids)
+    selected_systems = query_all(
+        f"SELECT id, location FROM systems WHERE id IN ({placeholders})",
+        tuple(system_ids),
+    )
+    if (
+        len(selected_systems) != len(system_ids)
+        or any(system["location"] != current_system["location"] for system in selected_systems)
+    ):
+        return jsonify({"message": "All selected systems must belong to the same location"}), 400
     severity = clean_severity(payload.get("severity"))
     issue_status = clean(payload.get("status"), "Open")
     if issue_status not in ("Open", "Closed"):
         issue_status = "Open"
     closed_date = clean(payload.get("closed_date"), today_iso()) if issue_status == "Closed" else ""
-    execute(
-        """
-        INSERT INTO system_issues
-            (system_id, title, severity, opened, status, notes, reported_by, resolution_notes, closed_date, related_to)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-        """,
-        (
-            system_id,
-            clean(payload.get("title"), "Untitled issue"),
-            severity,
-            clean(payload.get("opened"), today_iso()),
-            issue_status,
-            clean(payload.get("notes")),
-            clean(payload.get("reported_by"), "Unknown"),
-            clean(payload.get("resolution_notes")),
-            closed_date,
-            clean_issue_relations(payload.get("related_to")),
-        ),
-    )
+    with get_db() as db:
+        cursor = db.execute(
+            """
+            INSERT INTO system_issues
+                (system_id, title, severity, opened, status, notes, reported_by, resolution_notes, closed_date, related_to)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                system_ids[0],
+                clean(payload.get("title"), "Untitled issue"),
+                severity,
+                clean(payload.get("opened"), today_iso()),
+                issue_status,
+                clean(payload.get("notes")),
+                clean(payload.get("reported_by"), "Unknown"),
+                clean(payload.get("resolution_notes")),
+                closed_date,
+                clean_issue_relations(payload.get("related_to")),
+            ),
+        )
+        db.executemany(
+            "INSERT INTO system_issue_links (issue_id, system_id) VALUES (?, ?)",
+            [(cursor.lastrowid, selected_id) for selected_id in system_ids],
+        )
+        db.commit()
     if severity == "High":
-        current = query_one("SELECT status FROM systems WHERE id = ?", (system_id,))
-        if current and current["status"] == "Operational":
-            set_system_status(system_id, "Needs Maintenance", payload.get("opened"))
+        for selected_id in system_ids:
+            current = query_one("SELECT status FROM systems WHERE id = ?", (selected_id,))
+            if current and current["status"] == "Operational":
+                set_system_status(selected_id, "Needs Maintenance", payload.get("opened"))
     return jsonify(load_state())
 
 
@@ -1484,30 +1574,69 @@ def create_issue(system_id):
 def update_issue(issue_id):
     require_login()
     payload = request.get_json(force=True)
+    existing_issue = query_one(
+        """
+        SELECT system_issues.system_id, systems.location
+        FROM system_issues
+        JOIN systems ON systems.id = system_issues.system_id
+        WHERE system_issues.id = ?
+        """,
+        (issue_id,),
+    )
+    if not existing_issue:
+        abort(404)
+    existing_system_ids = [
+        row["system_id"]
+        for row in query_all(
+            "SELECT system_id FROM system_issue_links WHERE issue_id = ? ORDER BY system_id",
+            (issue_id,),
+        )
+    ]
+    system_ids = clean_system_ids(payload.get("system_ids")) or existing_system_ids
+    if not system_ids:
+        return jsonify({"message": "Select at least one system"}), 400
+    placeholders = ",".join("?" for _ in system_ids)
+    selected_systems = query_all(
+        f"SELECT id, location FROM systems WHERE id IN ({placeholders})",
+        tuple(system_ids),
+    )
+    if (
+        len(selected_systems) != len(system_ids)
+        or any(system["location"] != existing_issue["location"] for system in selected_systems)
+    ):
+        return jsonify({"message": "All selected systems must belong to the same location"}), 400
     issue_status = clean(payload.get("status"), "Open")
     if issue_status not in ("Open", "Closed"):
         issue_status = "Open"
     closed_date = clean(payload.get("closed_date"), today_iso()) if issue_status == "Closed" else ""
-    execute(
-        """
-        UPDATE system_issues
-        SET title = ?, severity = ?, opened = ?, status = ?, notes = ?,
-            reported_by = ?, resolution_notes = ?, closed_date = ?, related_to = ?
-        WHERE id = ?
-        """,
-        (
-            clean(payload.get("title"), "Untitled issue"),
-            clean_severity(payload.get("severity")),
-            clean(payload.get("opened"), today_iso()),
-            issue_status,
-            clean(payload.get("notes")),
-            clean(payload.get("reported_by"), "Unknown"),
-            clean(payload.get("resolution_notes")),
-            closed_date,
-            clean_issue_relations(payload.get("related_to")),
-            issue_id,
-        ),
-    )
+    with get_db() as db:
+        db.execute(
+            """
+            UPDATE system_issues
+            SET system_id = ?, title = ?, severity = ?, opened = ?, status = ?, notes = ?,
+                reported_by = ?, resolution_notes = ?, closed_date = ?, related_to = ?
+            WHERE id = ?
+            """,
+            (
+                system_ids[0],
+                clean(payload.get("title"), "Untitled issue"),
+                clean_severity(payload.get("severity")),
+                clean(payload.get("opened"), today_iso()),
+                issue_status,
+                clean(payload.get("notes")),
+                clean(payload.get("reported_by"), "Unknown"),
+                clean(payload.get("resolution_notes")),
+                closed_date,
+                clean_issue_relations(payload.get("related_to")),
+                issue_id,
+            ),
+        )
+        db.execute("DELETE FROM system_issue_links WHERE issue_id = ?", (issue_id,))
+        db.executemany(
+            "INSERT INTO system_issue_links (issue_id, system_id) VALUES (?, ?)",
+            [(issue_id, selected_id) for selected_id in system_ids],
+        )
+        db.commit()
     return jsonify(load_state())
 
 
@@ -1609,13 +1738,21 @@ def delete_issue(issue_id):
         if not issue:
             abort(404)
         system = db.execute("SELECT name FROM systems WHERE id = ?", (issue["system_id"],)).fetchone()
+        system_ids = [
+            row["system_id"]
+            for row in db.execute(
+                "SELECT system_id FROM system_issue_links WHERE issue_id = ? ORDER BY system_id",
+                (issue_id,),
+            ).fetchall()
+        ]
         archive_deleted_item(
             db,
             "issue",
             issue_id,
             f"{system['name'] if system else 'System'} - {issue['title']}",
-            {"issue": dict(issue)},
+            {"issue": dict(issue), "system_ids": system_ids},
         )
+        db.execute("DELETE FROM system_issue_links WHERE issue_id = ?", (issue_id,))
         db.execute("DELETE FROM system_issues WHERE id = ?", (issue_id,))
         db.commit()
     return jsonify(load_state())

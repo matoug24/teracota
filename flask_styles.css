@@ -367,14 +367,32 @@ h2 {
 }
 
 .timeline-scale {
-  display: grid;
-  grid-template-columns: repeat(var(--tick-count, 7), 1fr);
-  gap: 0;
+  display: block;
   padding: 10px 16px 4px 210px;
   color: var(--muted);
   font-size: 0.72rem;
   font-weight: 800;
   text-transform: uppercase;
+}
+
+.timeline-scale-track {
+  position: relative;
+  height: 14px;
+}
+
+.timeline-scale-track span {
+  position: absolute;
+  top: 0;
+  transform: translateX(-50%);
+  white-space: nowrap;
+}
+
+.timeline-scale-track span.first {
+  transform: none;
+}
+
+.timeline-scale-track span.last {
+  transform: translateX(-100%);
 }
 
 .timeline-list {
@@ -427,15 +445,16 @@ h2 {
   position: relative;
   height: var(--track-height, 70px);
   border-radius: 999px;
-  background:
-    repeating-linear-gradient(
-      to right,
-      transparent 0,
-      transparent calc(16.66% - 1px),
-      rgba(100, 115, 123, 0.18) calc(16.66% - 1px),
-      rgba(100, 115, 123, 0.18) 16.66%
-    ),
-    #edf3f5;
+  background: #edf3f5;
+}
+
+.timeline-gridline {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  z-index: 0;
+  width: 1px;
+  background: rgba(100, 115, 123, 0.18);
 }
 
 .status-bar {
@@ -486,7 +505,7 @@ h2 {
   color: #ffffff;
   font-size: 0.68rem;
   font-weight: 900;
-  transform: translate(-50%, -50%);
+  transform: translate(calc(-50% + var(--marker-offset, 0px)), -50%);
   box-shadow: 0 2px 8px rgba(21, 37, 45, 0.2);
 }
 

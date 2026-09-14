@@ -314,6 +314,7 @@ function renderTimeline() {
     </div>
   `;
 
+  spreadTimelineMarkers(timelineArea);
   timelineArea.querySelectorAll(".timeline-row").forEach((button) => {
     button.addEventListener("click", () => {
       const systemId = button.getAttribute("data-system-id");
@@ -338,6 +339,7 @@ function renderTimelineRow(system, start, end) {
         <span>${escapeHtml(system.status)} - ${openIssueCount} open issue${openIssueCount === 1 ? "" : "s"}</span>
       </div>
       <div class="timeline-track" style="--track-height: ${trackHeight}px" aria-label="${escapeAttribute(system.name)} timeline">
+        ${renderTimelineGridLines(start, end)}
         ${segments.map(renderStatusSegment).join("")}
         ${markers.map(renderMarker).join("")}
       </div>
@@ -479,6 +481,7 @@ function renderSystemDetailPage() {
     </div>
   `;
 
+  spreadTimelineMarkers(systemDetailPage);
   bindSystemDetailActions(system);
   bindTimelineControls(systemDetailPage, "detail");
   bindRecordFilters();
@@ -639,6 +642,7 @@ function renderLocationDetailPage() {
       </section>
     </div>
   `;
+  spreadTimelineMarkers(locationDetailPage);
   locationDetailPage.querySelectorAll(".timeline-row").forEach((button) => {
     button.addEventListener("click", () => {
       window.location.href = `/systems/${button.dataset.systemId}`;
@@ -1839,7 +1843,7 @@ function eventMarkers(system, start, end) {
       severityClass: "",
       statusClass: "",
       label: "V",
-      title: `${visitPurpose(record.type)} visit - ${formatDate(record.date)} - ${record.summary || ""}`,
+      title: `${formatDate(record.date)}: ${visitPurpose(record.type)}\n${truncateText(record.summary || "No summary added.", 50)}`,
     });
   });
   system.issues.forEach((issue) => {
@@ -1849,7 +1853,7 @@ function eventMarkers(system, start, end) {
       severityClass: getSeverityClass(normalizeSeverity(issue.severity)),
       statusClass: issue.status === "Closed" ? "closed" : "open",
       label: "I",
-      title: `${issue.status} ${issue.severity} issue - ${formatDate(issue.opened)} - ${issue.title}`,
+      title: `${formatDate(issue.opened)}: ${issue.status} Issue (${normalizeSeverity(issue.severity)})\n${issue.title}`,
     });
   });
   (system.updates || []).forEach((update) => {
@@ -1869,7 +1873,7 @@ function eventMarkers(system, start, end) {
     .filter((event) => event.left >= 0 && event.left <= 100)
     .map((event) => ({ ...event, left: Math.min(98.5, Math.max(1.5, event.left)) }))
     .sort((a, b) => a.left - b.left);
-  return assignMarkerLanes(visibleEvents);
+  return visibleEvents.map((event) => ({ ...event, lane: 0 }));
 }
 
 function statusSegments(system, start, end) {
@@ -1889,16 +1893,55 @@ function statusSegments(system, start, end) {
   }).filter(Boolean);
 }
 
-function assignMarkerLanes(events) {
-  const laneEnds = { visit: [], issue: [], update: [] };
-  return events.map((event) => {
-    const lanes = laneEnds[event.kind];
-    let lane = lanes.findIndex((lastPosition) => event.left - lastPosition >= 3.5);
-    if (lane === -1) lane = lanes.length;
-    lanes[lane] = event.left;
-    return { ...event, lane };
+function spreadTimelineMarkers(container) {
+  requestAnimationFrame(() => {
+    container.querySelectorAll(".timeline-track").forEach((track) => {
+      const trackWidth = track.getBoundingClientRect().width;
+      if (!trackWidth) return;
+
+      ["visit", "issue"].forEach((kind) => {
+        const markers = [...track.querySelectorAll(`.timeline-marker.${kind}`)];
+        if (markers.length < 2) return;
+
+        markers.forEach((marker) => marker.style.setProperty("--marker-offset", "0px"));
+        const items = markers
+          .map((marker) => ({
+            marker,
+            original: (parseFloat(marker.style.left) / 100) * trackWidth,
+            halfWidth: marker.getBoundingClientRect().width / 2,
+          }))
+          .sort((a, b) => a.original - b.original);
+        const positions = items.map((item) => item.original);
+
+        for (let iteration = 0; iteration < 40; iteration += 1) {
+          let changed = false;
+          for (let index = 0; index < items.length - 1; index += 1) {
+            const minimumGap = items[index].halfWidth + items[index + 1].halfWidth + 4;
+            const overlap = minimumGap - (positions[index + 1] - positions[index]);
+            if (overlap > 0.05) {
+              positions[index] -= overlap / 2;
+              positions[index + 1] += overlap / 2;
+              changed = true;
+            }
+          }
+          positions.forEach((position, index) => {
+            positions[index] = Math.min(
+              trackWidth - items[index].halfWidth,
+              Math.max(items[index].halfWidth, position),
+            );
+          });
+          if (!changed) break;
+        }
+
+        items.forEach((item, index) => {
+          item.marker.style.setProperty("--marker-offset", `${positions[index] - item.original}px`);
+        });
+      });
+    });
   });
 }
+
+window.addEventListener("resize", () => spreadTimelineMarkers(document));
 
 function timelineWindow(months = 12, offset = 0) {
   const end = addMonths(startOfDay(new Date()), offset);
@@ -1946,10 +1989,22 @@ function renderTimelineControls(scope, range, label) {
 function renderTimelineScale(start, end, extraClass = "") {
   const labels = monthLabels(start, end);
   return `
-    <div class="timeline-scale ${extraClass}" style="--tick-count: ${labels.length}">
-      ${labels.map((label) => `<span>${escapeHtml(label)}</span>`).join("")}
+    <div class="timeline-scale ${extraClass}">
+      <div class="timeline-scale-track">
+        ${labels.map((label, index) => `
+          <span class="${index === 0 ? "first" : ""} ${index === labels.length - 1 ? "last" : ""}"
+            style="left: ${label.left}%">${escapeHtml(label.text)}</span>
+        `).join("")}
+      </div>
     </div>
   `;
+}
+
+function renderTimelineGridLines(start, end) {
+  const labels = monthLabels(start, end);
+  return labels.slice(1, -1)
+    .map((label) => `<i class="timeline-gridline" style="left: ${label.left}%" aria-hidden="true"></i>`)
+    .join("");
 }
 
 function bindTimelineControls(container, scope) {
@@ -2022,7 +2077,10 @@ function monthLabels(start, end) {
   for (let index = 0; index < count; index += 1) {
     const progress = count === 1 ? 0 : index / (count - 1);
     const labelDate = addMonths(cursor, Math.round(spanMonths * progress));
-    labels.push(labelDate.toLocaleDateString("en", { month: "short", year: "2-digit" }));
+    labels.push({
+      text: labelDate.toLocaleDateString("en", { month: "short", year: "2-digit" }),
+      left: Math.min(100, Math.max(0, timelinePositionFromDate(labelDate, start, end))),
+    });
   }
   return labels;
 }
@@ -2090,6 +2148,12 @@ function splitList(value) {
 function visitPurpose(value) {
   const purposes = splitList(value).filter((item) => visitCategories.includes(item));
   return purposes.length ? purposes.join(", ") : "Not specified";
+}
+
+function truncateText(value, maximumLength) {
+  const text = String(value || "").trim();
+  if (text.length <= maximumLength) return text;
+  return `${text.slice(0, Math.max(0, maximumLength - 3)).trimEnd()}...`;
 }
 
 function addMonths(dateValue, months) {

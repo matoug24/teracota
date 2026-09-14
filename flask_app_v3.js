@@ -1,14 +1,17 @@
-let state = { authenticated: false, systems: [], tasks: [], locations: [], deleted_items: [], theme: "standard" };
+let state = { authenticated: false, systems: [], tasks: [], locations: [], deleted_items: [], theme: "standard", timeline_months: 12 };
 let visitorLogData = null;
 let activeView = "systems";
 let dialogMode = null;
 let editingItem = null;
 let dashboardRangeMonths = 12;
 let dashboardRangeOffset = 0;
-let detailRangeScale = 1;
+let dashboardRangeInitialized = false;
+let detailRangeMonths = 12;
 let detailRangeOffset = 0;
+let detailRangeInitialized = false;
 let issueSeverityFilter = "All";
 let issueStatusFilter = "All";
+let issueTypeFilter = "All";
 let visitTypeFilter = "All";
 let issuePage = 1;
 let visitPage = 1;
@@ -79,6 +82,7 @@ document.addEventListener("click", (event) => {
   if (action === "siteVisit") openDialog("siteVisit");
   if (action === "issue") openDialog("systemIssue");
   if (action === "systemUpdate") openDialog("systemUpdate");
+  if (action === "locationSystemUpdate") openDialog("locationSystemUpdate");
   if (action === "editLocation") openDialog("editLocation", getCurrentLocation());
   if (action === "deleteSystem" && system) deleteItem("system", system.id);
 });
@@ -111,6 +115,14 @@ async function loadState() {
     state = await response.json();
     if (!Array.isArray(state.systems) || !Array.isArray(state.tasks)) {
       throw new Error("The server returned an incomplete application state.");
+    }
+    if (!dashboardRangeInitialized) {
+      dashboardRangeMonths = normalizeTimelineMonths(state.timeline_months);
+      dashboardRangeInitialized = true;
+    }
+    if (!detailRangeInitialized) {
+      detailRangeMonths = normalizeTimelineMonths(state.timeline_months);
+      detailRangeInitialized = true;
     }
     if (pageMode === "home" && window.location.hash === "#development") {
       activeView = "development";
@@ -222,7 +234,7 @@ function render() {
 function applyTheme() {
   const theme = themeOptions.find((option) => option.id === state.theme) || themeOptions[0];
   const filename = theme.id === "standard" ? "flask_styles.css" : `flask_styles_${theme.id.replace("-", "_")}.css`;
-  const nextHref = `/assets/${filename}?v=20260908-multi-updates`;
+  const nextHref = `/assets/${filename}?v=20260914-issues-updates`;
   if (!themeStylesheet.href.endsWith(nextHref)) themeStylesheet.href = nextHref;
 }
 
@@ -393,16 +405,23 @@ function renderSystemDetailPage() {
   }
 
   const fullHistory = fullTimelineWindow(system);
-  const fullTimeline = scaledTimelineWindow(fullHistory, detailRangeScale, detailRangeOffset);
+  const showingAllHistory = detailRangeMonths === "all";
+  const detailTimeline = showingAllHistory
+    ? fullHistory
+    : timelineWindow(detailRangeMonths, detailRangeOffset);
   const openIssueCount = system.issues.filter((issue) => issue.status !== "Closed").length;
-  const visibleIssues = system.issues.filter((issue) => (
+  const filteredIssues = system.issues.filter((issue) => (
     (issueSeverityFilter === "All" || normalizeSeverity(issue.severity) === issueSeverityFilter)
     && (issueStatusFilter === "All" || issue.status === issueStatusFilter)
   ));
+  const issueAndUpdateRecords = [
+    ...(issueTypeFilter === "Updates" ? [] : filteredIssues.map((issue) => ({ kind: "issue", date: issue.opened, item: issue }))),
+    ...(issueTypeFilter === "Issues" ? [] : (system.updates || []).map((update) => ({ kind: "update", date: update.date, item: update }))),
+  ].sort((a, b) => String(b.date).localeCompare(String(a.date)) || b.item.id - a.item.id);
   const visibleVisits = system.maintenance.filter((record) => (
     visitTypeFilter === "All" || splitList(record.type).includes(visitTypeFilter)
   ));
-  const issuePagination = paginateItems(visibleIssues, issuePage, systemRecordPageSize);
+  const issuePagination = paginateItems(issueAndUpdateRecords, issuePage, systemRecordPageSize);
   const visitPagination = paginateItems(visibleVisits, visitPage, systemRecordPageSize);
   issuePage = issuePagination.page;
   visitPage = visitPagination.page;
@@ -429,10 +448,10 @@ function renderSystemDetailPage() {
     <section class="detail-section">
       <header>
         <h3>System Timeline</h3>
-        ${renderTimelineControls("detail", fullTimeline, detailRangeScale === 1 && detailRangeOffset === 0 ? "All history" : formatTimelineSpan(fullTimeline))}
+        ${renderTimelineControls("detail", detailTimeline, showingAllHistory ? "All history" : `${detailRangeMonths} months`)}
       </header>
-      ${renderTimelineScale(fullTimeline.start, fullTimeline.end, "detail-timeline-scale")}
-      ${renderTimelineRow(system, fullTimeline.start, fullTimeline.end)}
+      ${renderTimelineScale(detailTimeline.start, detailTimeline.end, "detail-timeline-scale")}
+      ${renderTimelineRow(system, detailTimeline.start, detailTimeline.end)}
       <div class="timeline-history-block">
         <span class="timeline-history-title">System Status Changes</span>
         <div class="status-history-list" aria-label="Status history">
@@ -456,15 +475,16 @@ function renderSystemDetailPage() {
     <div class="detail-layout">
       <section class="detail-section">
         <header>
-          <h3>Issues</h3>
-          <span class="tag">${system.issues.length} total</span>
+          <h3>Issues and Updates</h3>
+          <span class="tag">${system.issues.length + (system.updates || []).length} total</span>
         </header>
-        ${renderFilterGroup("Severity", "issue-severity", ["All", "Low", "Medium", "High"], issueSeverityFilter)}
-        ${renderFilterGroup("Status", "issue-status", ["All", "Open", "Closed"], issueStatusFilter)}
+        ${renderFilterGroup("Type", "issue-type", ["All", "Issues", "Updates"], issueTypeFilter)}
+        ${issueTypeFilter === "Updates" ? "" : renderFilterGroup("Severity", "issue-severity", ["All", "Low", "Medium", "High"], issueSeverityFilter)}
+        ${issueTypeFilter === "Updates" ? "" : renderFilterGroup("Status", "issue-status", ["All", "Open", "Closed"], issueStatusFilter)}
         <div class="issue-list">
-          ${renderIssueItems(issuePagination.items, "No issues match the selected filters.")}
+          ${renderIssueAndUpdateItems(issuePagination.items)}
         </div>
-        ${renderPagination("issues", issuePagination, "issues")}
+        ${renderPagination("issues", issuePagination, "records")}
       </section>
 
       <section class="detail-section">
@@ -529,6 +549,10 @@ function bindRecordFilters() {
       }
       if (kind === "issue-status") {
         issueStatusFilter = value;
+        issuePage = 1;
+      }
+      if (kind === "issue-type") {
+        issueTypeFilter = value;
         issuePage = 1;
       }
       if (kind === "visit-type") {
@@ -606,6 +630,7 @@ function renderLocationDetailPage() {
       <a class="secondary-button link-button" href="/">Back to Systems</a>
       <div class="detail-actions requires-auth">
         <button class="primary-button" type="button" data-action="siteVisit">Add Site Visit</button>
+        <button class="secondary-button" type="button" data-action="locationSystemUpdate">Record Update</button>
       </div>
     </div>
 
@@ -690,6 +715,19 @@ function renderAdminPage() {
     </section>
 
     <section class="admin-section">
+      <header><div><p class="eyebrow">Timeline timeframe</p><h3>Default Timeline Period</h3></div><span class="tag">${normalizeTimelineMonths(state.timeline_months)} months</span></header>
+      <label class="admin-setting-field" for="defaultTimelineMonths">
+        <span>Period shown on dashboard and detail pages</span>
+        <select id="defaultTimelineMonths">
+          ${Array.from({ length: 12 }, (_, index) => (index + 1) * 3).map((months) => `
+            <option value="${months}" ${months === normalizeTimelineMonths(state.timeline_months) ? "selected" : ""}>${months} months</option>
+          `).join("")}
+        </select>
+      </label>
+      <p class="muted admin-help">This is the initial period and the range restored by Reset on dashboard, location, and system timelines. Timeline zoom changes the period by three months per click.</p>
+    </section>
+
+    <section class="admin-section">
       <header><div><p class="eyebrow">Portable backup</p><h3>Data Export and Restore</h3></div><span class="tag">CSV</span></header>
       <div class="admin-data-actions">
         <a class="primary-button link-button" href="/api/admin/export.csv" download>Export All Data</a>
@@ -750,6 +788,17 @@ function renderAdminPage() {
       method: "PUT",
       body: JSON.stringify({ theme: button.dataset.theme }),
     }));
+  });
+  document.querySelector("#defaultTimelineMonths")?.addEventListener("change", async (event) => {
+    const months = normalizeTimelineMonths(event.target.value);
+    dashboardRangeMonths = months;
+    dashboardRangeOffset = 0;
+    detailRangeMonths = months;
+    detailRangeOffset = 0;
+    await sendJson("/api/settings/timeline-months", {
+      method: "PUT",
+      body: JSON.stringify({ months }),
+    });
   });
   adminPage.querySelectorAll("[data-admin-edit]").forEach((button) => {
     button.addEventListener("click", () => {
@@ -1322,8 +1371,12 @@ function openDialog(mode, item = null) {
       fields: issueFields(item),
     },
     systemUpdate: {
-      title: `Record Update - ${system?.name || "System"}`,
-      fields: systemUpdateFields(),
+      title: `Record Update - ${system?.location || "Location"}`,
+      fields: systemUpdateFields({}, system ? [system.id] : [], system?.location || ""),
+    },
+    locationSystemUpdate: {
+      title: `Record Update - ${initialLocation}`,
+      fields: systemUpdateFields({}, [], initialLocation),
     },
     editSystemUpdate: {
       title: "Edit Update Record",
@@ -1406,12 +1459,18 @@ async function saveDialog() {
       await sendJson(`/api/issues/${editingItem.id}`, { method: "PUT", body: JSON.stringify(data) });
     }
 
-    if (dialogMode === "systemUpdate" && system) {
+    if ((dialogMode === "systemUpdate" && system) || dialogMode === "locationSystemUpdate") {
       if (!data.update_type || (Array.isArray(data.update_type) && !data.update_type.length)) {
         showFormError("Select at least one update type.");
         return;
       }
-      await sendJson(`/api/systems/${system.id}/updates`, { method: "POST", body: JSON.stringify(data) });
+      if (!data.system_ids || (Array.isArray(data.system_ids) && !data.system_ids.length)) {
+        showFormError("Select at least one system.");
+        return;
+      }
+      const selectedSystemIds = Array.isArray(data.system_ids) ? data.system_ids : [data.system_ids];
+      const anchorSystemId = dialogMode === "systemUpdate" ? system.id : selectedSystemIds[0];
+      await sendJson(`/api/systems/${anchorSystemId}/updates`, { method: "POST", body: JSON.stringify(data) });
     }
 
     if (dialogMode === "editSystemUpdate" && editingItem) {
@@ -1648,13 +1707,26 @@ function issueFields(issue = {}) {
   ];
 }
 
-function systemUpdateFields(update = {}) {
+function systemUpdateFields(update = {}, selectedSystemIds = [], location = "") {
   update = update || {};
-  return [
+  const fields = [
     field("date", "Update Date", "date", update.date || new Date().toISOString().slice(0, 10)),
+    field("reported_by", "Reported By", "text", update.reported_by || ""),
+  ];
+  if (!update.id) {
+    fields.push(field(
+      "system_ids",
+      "Systems Updated",
+      "checkboxes",
+      selectedSystemIds.map(String),
+      systemsAtLocation(location).map((system) => ({ value: String(system.id), label: system.name })),
+    ));
+  }
+  fields.push(
     field("update_type", "What Was Updated", "checkboxes", splitList(update.update_type), systemUpdateTypes),
     field("notes", "Notes (version, colors, etc.)", "textarea", update.notes || ""),
-  ];
+  );
+  return fields;
 }
 
 function taskFields(task = {}) {
@@ -1785,6 +1857,41 @@ function renderIssueItems(issues, emptyMessage) {
   `).join("");
 }
 
+function renderIssueAndUpdateItems(records) {
+  if (!records.length) {
+    return `
+      <div class="issue-item">
+        <h3>No records</h3>
+        <p>No issues or updates match the selected filters.</p>
+      </div>
+    `;
+  }
+  return records.map((record) => (
+    record.kind === "issue"
+      ? renderIssueItems([record.item], "")
+      : renderSystemUpdateItem(record.item)
+  )).join("");
+}
+
+function renderSystemUpdateItem(update) {
+  return `
+    <article class="issue-item update-record-item">
+      <div class="item-header">
+        <h3>${renderUpdateDots(update.update_type)}${escapeHtml(updateTypeLabel(update.update_type))} Update</h3>
+        <div class="item-actions requires-auth">
+          <button class="secondary-button" type="button" data-edit-system-update="${update.id}">Edit</button>
+          <button class="danger-button" type="button" data-delete-system-update="${update.id}">Delete</button>
+        </div>
+      </div>
+      <p>${escapeHtml(update.notes || "No notes added.")}</p>
+      <div class="tag-row">
+        <span class="tag">Reported by ${escapeHtml(update.reported_by || "Unknown")}</span>
+        <span class="tag">Updated ${formatDate(update.date)}</span>
+      </div>
+    </article>
+  `;
+}
+
 function renderIssueRelationTags(issue) {
   const relations = splitList(issue.related_to);
   if (!relations.length) return '<span class="tag issue-relation-tag">Not classified</span>';
@@ -1801,10 +1908,9 @@ function renderSystemUpdateHistory(updates) {
       ${updates.length ? `
         <div class="status-history-list system-update-list">
           ${updates.map((update) => `
-            <span class="status-history-item system-update-history-item" title="${escapeAttribute(update.notes || "No notes added.")}">
+            <span class="status-history-item system-update-history-item">
               ${renderUpdateDots(update.update_type)}
               ${escapeHtml(updateTypeLabel(update.update_type))} <small>${formatDate(update.date)}</small>
-              ${update.notes ? `<small class="system-update-note">${escapeHtml(update.notes)}</small>` : ""}
             </span>
           `).join("")}
         </div>
@@ -1966,21 +2072,21 @@ function fullTimelineWindow(system) {
   return { start, end };
 }
 
-function scaledTimelineWindow(base, scale, offset) {
-  const baseSpan = base.end - base.start;
-  const span = Math.max(1000 * 60 * 60 * 24 * 14, baseSpan * scale);
-  const center = (base.start.getTime() + base.end.getTime()) / 2 + offset * span * 0.35;
-  return { start: new Date(center - span / 2), end: new Date(center + span / 2) };
-}
-
 function renderTimelineControls(scope, range, label) {
+  const boundedDashboardRange = scope === "dashboard" || scope === "location";
+  const detailAllHistory = scope === "detail" && detailRangeMonths === "all";
+  const zoomOutDisabled = (boundedDashboardRange && dashboardRangeMonths >= 36) || detailAllHistory ? "disabled" : "";
+  const zoomInDisabled = (boundedDashboardRange && dashboardRangeMonths <= 3)
+    || (scope === "detail" && detailRangeMonths === 3) ? "disabled" : "";
+  const navigationDisabled = detailAllHistory ? "disabled" : "";
+  const zoomOutTitle = scope === "detail" && detailRangeMonths === 36 ? "Show all history" : "Zoom out";
   return `
     <div class="timeline-controls" aria-label="Timeline controls">
-      <button class="icon-button timeline-control" type="button" data-timeline-scope="${scope}" data-timeline-action="previous" title="Earlier" aria-label="Earlier">&lt;</button>
-      <button class="icon-button timeline-control" type="button" data-timeline-scope="${scope}" data-timeline-action="zoom-out" title="Zoom out" aria-label="Zoom out">-</button>
+      <button class="icon-button timeline-control" type="button" data-timeline-scope="${scope}" data-timeline-action="previous" title="Earlier" aria-label="Earlier" ${navigationDisabled}>&lt;</button>
+      <button class="icon-button timeline-control" type="button" data-timeline-scope="${scope}" data-timeline-action="zoom-out" title="${zoomOutTitle}" aria-label="${zoomOutTitle}" ${zoomOutDisabled}>-</button>
       <span class="timeline-range-label" title="${escapeAttribute(formatDate(range.start))} to ${escapeAttribute(formatDate(range.end))}">${escapeHtml(label)}</span>
-      <button class="icon-button timeline-control" type="button" data-timeline-scope="${scope}" data-timeline-action="zoom-in" title="Zoom in" aria-label="Zoom in">+</button>
-      <button class="icon-button timeline-control" type="button" data-timeline-scope="${scope}" data-timeline-action="next" title="Later" aria-label="Later">&gt;</button>
+      <button class="icon-button timeline-control" type="button" data-timeline-scope="${scope}" data-timeline-action="zoom-in" title="Zoom in" aria-label="Zoom in" ${zoomInDisabled}>+</button>
+      <button class="icon-button timeline-control" type="button" data-timeline-scope="${scope}" data-timeline-action="next" title="Later" aria-label="Later" ${navigationDisabled}>&gt;</button>
       <button class="secondary-button timeline-reset" type="button" data-timeline-scope="${scope}" data-timeline-action="reset">Reset</button>
     </div>
   `;
@@ -1991,8 +2097,8 @@ function renderTimelineScale(start, end, extraClass = "") {
   return `
     <div class="timeline-scale ${extraClass}">
       <div class="timeline-scale-track">
-        ${labels.map((label, index) => `
-          <span class="${index === 0 ? "first" : ""} ${index === labels.length - 1 ? "last" : ""}"
+        ${labels.map((label) => `
+          <span class="${label.left <= 0.05 ? "first" : ""} ${label.left >= 99.95 ? "last" : ""}"
             style="left: ${label.left}%">${escapeHtml(label.text)}</span>
         `).join("")}
       </div>
@@ -2013,12 +2119,12 @@ function bindTimelineControls(container, scope) {
       event.stopPropagation();
       const action = button.dataset.timelineAction;
       if (scope === "dashboard" || scope === "location") {
-        if (action === "zoom-in") dashboardRangeMonths = Math.max(1, Math.round(dashboardRangeMonths / 2));
-        if (action === "zoom-out") dashboardRangeMonths = Math.min(60, dashboardRangeMonths * 2);
+        if (action === "zoom-in") dashboardRangeMonths = Math.max(3, dashboardRangeMonths - 3);
+        if (action === "zoom-out") dashboardRangeMonths = Math.min(36, dashboardRangeMonths + 3);
         if (action === "previous") dashboardRangeOffset -= Math.max(1, Math.round(dashboardRangeMonths / 2));
         if (action === "next") dashboardRangeOffset += Math.max(1, Math.round(dashboardRangeMonths / 2));
         if (action === "reset") {
-          dashboardRangeMonths = 12;
+          dashboardRangeMonths = normalizeTimelineMonths(state.timeline_months);
           dashboardRangeOffset = 0;
         }
         if (scope === "dashboard") renderTimeline();
@@ -2026,12 +2132,20 @@ function bindTimelineControls(container, scope) {
         return;
       }
 
-      if (action === "zoom-in") detailRangeScale = Math.max(0.125, detailRangeScale / 2);
-      if (action === "zoom-out") detailRangeScale = Math.min(8, detailRangeScale * 2);
-      if (action === "previous") detailRangeOffset -= 1;
-      if (action === "next") detailRangeOffset += 1;
+      if (action === "zoom-in") {
+        detailRangeMonths = detailRangeMonths === "all" ? 36 : Math.max(3, detailRangeMonths - 3);
+      }
+      if (action === "zoom-out") {
+        detailRangeMonths = detailRangeMonths >= 36 ? "all" : detailRangeMonths + 3;
+      }
+      if (action === "previous" && detailRangeMonths !== "all") {
+        detailRangeOffset -= Math.max(1, Math.round(detailRangeMonths / 2));
+      }
+      if (action === "next" && detailRangeMonths !== "all") {
+        detailRangeOffset += Math.max(1, Math.round(detailRangeMonths / 2));
+      }
       if (action === "reset") {
-        detailRangeScale = 1;
+        detailRangeMonths = normalizeTimelineMonths(state.timeline_months);
         detailRangeOffset = 0;
       }
       renderSystemDetailPage();
@@ -2053,11 +2167,6 @@ function renderFilterGroup(label, kind, options, active) {
   `;
 }
 
-function formatTimelineSpan(range) {
-  const months = Math.max(1, Math.round(monthDiff(range.start, range.end)));
-  return `${months} month${months === 1 ? "" : "s"}`;
-}
-
 function timelinePosition(dateString, start, end) {
   if (!dateString) return -1;
   const eventDate = startOfDay(new Date(`${dateString}T00:00:00`));
@@ -2065,18 +2174,31 @@ function timelinePosition(dateString, start, end) {
 }
 
 function timelinePositionFromDate(eventDate, start, end) {
-  const span = end - start;
-  return Math.round(((eventDate - start) / span) * 1000) / 10;
+  const span = calendarMonthCoordinate(end, start);
+  if (span <= 0) return 0;
+  return Math.round((calendarMonthCoordinate(eventDate, start) / span) * 1000) / 10;
+}
+
+function calendarMonthCoordinate(dateValue, origin) {
+  const date = startOfDay(dateValue);
+  let wholeMonths = monthDiff(origin, date);
+  let intervalStart = addMonths(origin, wholeMonths);
+  if (date < intervalStart) {
+    wholeMonths -= 1;
+    intervalStart = addMonths(origin, wholeMonths);
+  }
+  const intervalEnd = addMonths(origin, wholeMonths + 1);
+  const intervalSpan = Math.max(1, intervalEnd - intervalStart);
+  return wholeMonths + (date - intervalStart) / intervalSpan;
 }
 
 function monthLabels(start, end) {
   const labels = [];
-  const cursor = new Date(start);
   const spanMonths = Math.max(1, monthDiff(start, end));
-  const count = Math.min(9, spanMonths + 1);
-  for (let index = 0; index < count; index += 1) {
-    const progress = count === 1 ? 0 : index / (count - 1);
-    const labelDate = addMonths(cursor, Math.round(spanMonths * progress));
+  const intervalMonths = spanMonths <= 6 ? 1 : 3;
+  for (let monthOffset = 0; monthOffset <= spanMonths; monthOffset += intervalMonths) {
+    const labelDate = addMonths(start, monthOffset);
+    if (labelDate > end) break;
     labels.push({
       text: labelDate.toLocaleDateString("en", { month: "short", year: "2-digit" }),
       left: Math.min(100, Math.max(0, timelinePositionFromDate(labelDate, start, end))),
@@ -2087,6 +2209,11 @@ function monthLabels(start, end) {
 
 function monthDiff(start, end) {
   return (end.getFullYear() - start.getFullYear()) * 12 + (end.getMonth() - start.getMonth());
+}
+
+function normalizeTimelineMonths(value) {
+  const months = Number(value);
+  return Number.isInteger(months) && months >= 3 && months <= 36 && months % 3 === 0 ? months : 12;
 }
 
 function groupByLocation(systems) {
@@ -2158,7 +2285,11 @@ function truncateText(value, maximumLength) {
 
 function addMonths(dateValue, months) {
   const copy = new Date(dateValue);
+  const day = copy.getDate();
+  copy.setDate(1);
   copy.setMonth(copy.getMonth() + months);
+  const lastDay = new Date(copy.getFullYear(), copy.getMonth() + 1, 0).getDate();
+  copy.setDate(Math.min(day, lastDay));
   return startOfDay(copy);
 }
 

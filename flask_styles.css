@@ -1175,6 +1175,16 @@ dialog::backdrop {
   line-height: 1.45;
 }
 
+.update-record-item {
+  border-left: 3px solid var(--cyan);
+}
+
+.update-record-item h3 {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+}
+
 .status-history-item {
   display: inline-flex;
   align-items: center;
@@ -1402,6 +1412,27 @@ dialog::backdrop {
   align-items: center;
   flex-wrap: wrap;
   gap: 10px;
+}
+
+.admin-setting-field {
+  display: grid;
+  grid-template-columns: minmax(220px, 1fr) minmax(150px, 220px);
+  align-items: center;
+  gap: 16px;
+  max-width: 620px;
+  color: var(--text);
+  font-weight: 800;
+}
+
+.admin-setting-field select {
+  width: 100%;
+  min-height: 42px;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  background: var(--surface);
+  color: var(--text);
+  padding: 8px 36px 8px 11px;
+  font: inherit;
 }
 
 .admin-location-list {
@@ -2291,6 +2322,11 @@ button.task-item:hover {
   .record-filter {
     align-items: flex-start;
     flex-direction: column;
+  }
+
+  .admin-setting-field {
+    grid-template-columns: 1fr;
+    gap: 8px;
   }
 
   .admin-system-row,

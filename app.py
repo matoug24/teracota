@@ -196,11 +196,13 @@ def init_db():
             system_id INTEGER NOT NULL,
             date TEXT NOT NULL,
             update_type TEXT NOT NULL,
+            reported_by TEXT NOT NULL DEFAULT '',
             notes TEXT,
             FOREIGN KEY (system_id) REFERENCES systems (id)
         )
         """
     )
+    ensure_column("system_updates", "reported_by", "TEXT NOT NULL DEFAULT ''")
     execute(
         """
         CREATE TABLE IF NOT EXISTS locations (
@@ -258,6 +260,7 @@ def init_db():
     normalize_location_ranks()
     backfill_status_history()
     execute("INSERT OR IGNORE INTO app_settings (key, value) VALUES ('theme', 'standard')")
+    execute("INSERT OR IGNORE INTO app_settings (key, value) VALUES ('timeline_months', '12')")
 
 
 def seed_db():
@@ -433,6 +436,7 @@ def load_state():
         "locations": locations,
         "deleted_items": deleted_items,
         "theme": get_active_theme(),
+        "timeline_months": get_default_timeline_months(),
     }
 
 
@@ -760,6 +764,15 @@ def get_active_theme():
     setting = query_one("SELECT value FROM app_settings WHERE key = 'theme'")
     theme = setting["value"] if setting else "standard"
     return theme if theme in THEME_FILES else "standard"
+
+
+def get_default_timeline_months():
+    setting = query_one("SELECT value FROM app_settings WHERE key = 'timeline_months'")
+    try:
+        months = int(setting["value"]) if setting else 12
+    except (TypeError, ValueError):
+        return 12
+    return months if 3 <= months <= 36 and months % 3 == 0 else 12
 
 
 def render_page(page, system_id="", location=""):
@@ -1206,24 +1219,40 @@ def delete_status_history(history_id):
 @app.route("/api/systems/<int:system_id>/updates", methods=["POST"])
 def create_system_update(system_id):
     require_login()
-    if not query_one("SELECT id FROM systems WHERE id = ?", (system_id,)):
+    current_system = query_one("SELECT id, location FROM systems WHERE id = ?", (system_id,))
+    if not current_system:
         abort(404)
     payload = request.get_json(force=True)
     update_types = clean_update_types(payload.get("update_type"))
     if not update_types:
         return jsonify({"message": "Select at least one update type"}), 400
-    execute(
-        """
-        INSERT INTO system_updates (system_id, date, update_type, notes)
-        VALUES (?, ?, ?, ?)
-        """,
-        (
-            system_id,
-            clean(payload.get("date"), today_iso()),
-            update_types,
-            clean(payload.get("notes")),
-        ),
+    system_ids = clean_system_ids(payload.get("system_ids")) or [system_id]
+    placeholders = ",".join("?" for _ in system_ids)
+    selected_systems = query_all(
+        f"SELECT id, location FROM systems WHERE id IN ({placeholders})",
+        tuple(system_ids),
     )
+    if (
+        len(selected_systems) != len(system_ids)
+        or any(system["location"] != current_system["location"] for system in selected_systems)
+    ):
+        return jsonify({"message": "All selected systems must belong to the same location"}), 400
+
+    update_date = clean(payload.get("date"), today_iso())
+    reported_by = clean(payload.get("reported_by"), "Unknown")
+    notes = clean(payload.get("notes"))
+    with get_db() as db:
+        db.executemany(
+            """
+            INSERT INTO system_updates (system_id, date, update_type, reported_by, notes)
+            VALUES (?, ?, ?, ?, ?)
+            """,
+            [
+                (selected_id, update_date, update_types, reported_by, notes)
+                for selected_id in system_ids
+            ],
+        )
+        db.commit()
     return jsonify(load_state())
 
 
@@ -1239,12 +1268,13 @@ def update_system_update(update_id):
     execute(
         """
         UPDATE system_updates
-        SET date = ?, update_type = ?, notes = ?
+        SET date = ?, update_type = ?, reported_by = ?, notes = ?
         WHERE id = ?
         """,
         (
             clean(payload.get("date"), today_iso()),
             update_types,
+            clean(payload.get("reported_by"), "Unknown"),
             clean(payload.get("notes")),
             update_id,
         ),
@@ -1547,6 +1577,26 @@ def update_theme():
         ON CONFLICT(key) DO UPDATE SET value = excluded.value
         """,
         (theme,),
+    )
+    return jsonify(load_state())
+
+
+@app.route("/api/settings/timeline-months", methods=["PUT"])
+def update_timeline_months():
+    require_login()
+    payload = request.get_json(force=True)
+    try:
+        months = int(payload.get("months"))
+    except (TypeError, ValueError):
+        return jsonify({"message": "Timeline period must be a number of months"}), 400
+    if months < 3 or months > 36 or months % 3 != 0:
+        return jsonify({"message": "Timeline period must be between 3 and 36 months in 3-month steps"}), 400
+    execute(
+        """
+        INSERT INTO app_settings (key, value) VALUES ('timeline_months', ?)
+        ON CONFLICT(key) DO UPDATE SET value = excluded.value
+        """,
+        (str(months),),
     )
     return jsonify(load_state())
 

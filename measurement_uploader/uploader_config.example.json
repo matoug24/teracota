@@ -1,0 +1,20 @@
+{
+  "server_url": "https://teracota.matoug.com",
+  "api_token": "replace-with-TERACOTA_MEASUREMENT_UPLOAD_TOKEN",
+  "client": "Exact Location Name",
+  "data_directory": "D:\\Production\\Results",
+  "source_id": "production-pc-01",
+  "scan_mode": "year_month",
+  "recursive": false,
+  "initial_lookback_days": 2,
+  "rescan_overlap_days": 1,
+  "bootstrap_all_history": false,
+  "stable_seconds": 30,
+  "request_timeout_seconds": 3600,
+  "max_attempts": 3,
+  "retry_delay_seconds": 600,
+  "verify_tls": true,
+  "expected_daily_files": 50,
+  "journal_path": "C:\\ProgramData\\TeraView\\MeasurementUploader\\upload_journal.sqlite3",
+  "log_path": "C:\\ProgramData\\TeraView\\MeasurementUploader\\uploader.log"
+}

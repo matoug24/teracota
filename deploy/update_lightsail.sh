@@ -9,6 +9,10 @@ DB_PATH="${TERACOTA_DB_PATH:-}"
 BACKUP_DIR="${TERACOTA_BACKUP_DIR:-/var/backups/teracota}"
 SERVICE_SOURCE="${APP_DIR}/deploy/teracota.service"
 SERVICE_TARGET="/etc/systemd/system/teracota.service"
+IMPORT_SERVICE_SOURCE="${APP_DIR}/deploy/teracota-measurement-import.service"
+IMPORT_SERVICE_TARGET="/etc/systemd/system/teracota-measurement-import.service"
+IMPORT_TIMER_SOURCE="${APP_DIR}/deploy/teracota-measurement-import.timer"
+IMPORT_TIMER_TARGET="/etc/systemd/system/teracota-measurement-import.timer"
 NGINX_SOURCE="${APP_DIR}/deploy/nginx-teracota.conf"
 NGINX_TARGET="/etc/nginx/sites-available/teracota"
 HEALTH_URL="http://127.0.0.1:8000/healthz"
@@ -60,7 +64,7 @@ trap on_error ERR
 
 [[ "${EUID}" -eq 0 ]] || fail "Run this updater with sudo."
 
-for command in curl flock git nginx runuser sqlite3 systemctl; do
+for command in cmp curl flock git nginx runuser sqlite3 systemctl; do
     command -v "${command}" >/dev/null 2>&1 || fail "Required command is missing: ${command}"
 done
 
@@ -68,6 +72,8 @@ done
 [[ -f "${APP_DIR}/.env" ]] || fail "Missing ${APP_DIR}/.env"
 [[ -x "${APP_DIR}/.venv/bin/python" ]] || fail "Missing Python environment at ${APP_DIR}/.venv"
 [[ -f "${SERVICE_SOURCE}" ]] || fail "Missing ${SERVICE_SOURCE}"
+[[ -f "${IMPORT_SERVICE_SOURCE}" ]] || fail "Missing ${IMPORT_SERVICE_SOURCE}"
+[[ -f "${IMPORT_TIMER_SOURCE}" ]] || fail "Missing ${IMPORT_TIMER_SOURCE}"
 [[ -f "${NGINX_SOURCE}" ]] || fail "Missing ${NGINX_SOURCE}"
 
 if [[ -z "${DB_PATH}" ]]; then
@@ -104,6 +110,24 @@ runuser -u "${APP_USER}" -- git -C "${APP_DIR}" fetch --prune origin "${BRANCH}"
 runuser -u "${APP_USER}" -- git -C "${APP_DIR}" pull --ff-only origin "${BRANCH}"
 current_commit="$(runuser -u "${APP_USER}" -- git -C "${APP_DIR}" rev-parse --short HEAD)"
 
+# If this pull updated the updater itself, continue with the newly pulled
+# version so path or deployment changes take effect in the current run.
+if [[ "${TERACOTA_UPDATE_REEXECED:-0}" != "1" ]] && \
+   ! cmp -s -- "$0" "${APP_DIR}/deploy/update_lightsail.sh"; then
+    log "Continuing with the newly pulled updater"
+    exec env \
+        TERACOTA_UPDATE_STAGED=1 \
+        TERACOTA_UPDATE_REEXECED=1 \
+        TERACOTA_UPDATE_TEMP="${TERACOTA_UPDATE_TEMP:-}" \
+        TERACOTA_APP_DIR="${APP_DIR}" \
+        TERACOTA_APP_USER="${APP_USER}" \
+        TERACOTA_APP_GROUP="${APP_GROUP}" \
+        TERACOTA_BRANCH="${BRANCH}" \
+        TERACOTA_DB_PATH="${DB_PATH}" \
+        TERACOTA_BACKUP_DIR="${BACKUP_DIR}" \
+        bash "${APP_DIR}/deploy/update_lightsail.sh" "$@"
+fi
+
 log "Installing Python dependencies"
 runuser -u "${APP_USER}" -- \
     "${APP_DIR}/.venv/bin/python" -m pip install \
@@ -112,13 +136,19 @@ runuser -u "${APP_USER}" -- \
 
 log "Checking Python source"
 runuser -u "${APP_USER}" -- \
-    "${APP_DIR}/.venv/bin/python" -m py_compile \
-    "${APP_DIR}/app.py" "${APP_DIR}/wsgi.py" "${APP_DIR}/gunicorn.conf.py"
+    "${APP_DIR}/.venv/bin/python" -m compileall -q \
+    "${APP_DIR}/app.py" \
+    "${APP_DIR}/wsgi.py" \
+    "${APP_DIR}/gunicorn.conf.py" \
+    "${APP_DIR}/measurements"
 
 log "Updating the systemd service"
 install -o root -g root -m 0644 "${SERVICE_SOURCE}" "${SERVICE_TARGET}"
+install -o root -g root -m 0644 "${IMPORT_SERVICE_SOURCE}" "${IMPORT_SERVICE_TARGET}"
+install -o root -g root -m 0644 "${IMPORT_TIMER_SOURCE}" "${IMPORT_TIMER_TARGET}"
 systemctl daemon-reload
 systemctl enable teracota >/dev/null
+systemctl enable --now teracota-measurement-import.timer >/dev/null
 
 log "Checking the live Nginx configuration"
 nginx_backup="${BACKUP_DIR}/nginx-before-update-${stamp}.conf"

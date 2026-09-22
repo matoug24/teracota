@@ -853,6 +853,18 @@ dialog::backdrop {
   gap: 6px;
 }
 
+.locked-field {
+  background: var(--panel-soft);
+  color: var(--muted);
+  cursor: not-allowed;
+}
+
+.field-help {
+  color: var(--muted);
+  font-size: 0.76rem;
+  line-height: 1.4;
+}
+
 .dialog-actions {
   border-top: 1px solid var(--line);
   justify-content: flex-end;

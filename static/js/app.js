@@ -233,8 +233,12 @@ function render() {
 
 function applyTheme() {
   const theme = themeOptions.find((option) => option.id === state.theme) || themeOptions[0];
-  const filename = theme.id === "standard" ? "flask_styles.css" : `flask_styles_${theme.id.replace("-", "_")}.css`;
-  const nextHref = `/assets/${filename}?v=20260914-shared-issues`;
+  const filenames = {
+    standard: "app.css",
+    "control-room": "control_room.css",
+    instrument: "instrument.css",
+  };
+  const nextHref = `/assets/css/${filenames[theme.id] || filenames.standard}?v=20260920-structure`;
   if (!themeStylesheet.href.endsWith(nextHref)) themeStylesheet.href = nextHref;
 }
 
@@ -428,6 +432,7 @@ function renderSystemDetailPage() {
     <div class="detail-page-header">
       <a class="secondary-button link-button" href="/">Back to Systems</a>
       <div class="detail-actions requires-auth">
+        <a class="secondary-button link-button" href="/measurements/system/${system.id}">Measurement History</a>
         <button class="secondary-button" type="button" data-action="editSystem">Edit Info</button>
         <button class="primary-button" type="button" data-action="maintenance">Add Site Visit</button>
         <button class="secondary-button" type="button" data-action="issue">Report Issue</button>
@@ -627,6 +632,7 @@ function renderLocationDetailPage() {
     <div class="detail-page-header">
       <a class="secondary-button link-button" href="/">Back to Systems</a>
       <div class="detail-actions requires-auth">
+        <a class="secondary-button link-button" href="/measurements/location/${encodeURIComponent(initialLocation)}">Measurement History</a>
         <button class="primary-button" type="button" data-action="siteVisit">Add Site Visit</button>
         <button class="secondary-button" type="button" data-action="locationSystemUpdate">Record Update</button>
       </div>
@@ -771,6 +777,8 @@ function renderAdminPage() {
       </div>
     </section>
 
+    <section class="admin-section" id="measurementAdminSection"></section>
+
     <section class="admin-section">
       <header><div><p class="eyebrow">Recovery area</p><h3>Deleted Records</h3></div><span class="tag">${state.deleted_items.length}</span></header>
       <div class="deleted-record-list">
@@ -801,7 +809,7 @@ function renderAdminPage() {
   adminPage.querySelectorAll("[data-admin-edit]").forEach((button) => {
     button.addEventListener("click", () => {
       const system = state.systems.find((item) => item.id === Number(button.dataset.adminEdit));
-      openDialog("editSystem", system);
+      openDialog("editSystemAdmin", system);
     });
   });
   adminPage.querySelectorAll("[data-admin-delete]").forEach((button) => {
@@ -823,6 +831,7 @@ function renderAdminPage() {
   adminPage.querySelectorAll("[data-admin-purge]").forEach((button) => {
     button.addEventListener("click", () => permanentlyDeleteItem(Number(button.dataset.adminPurge)));
   });
+  window.MeasurementAdmin?.render(adminPage);
 }
 
 async function moveLocation(index, direction) {
@@ -1342,6 +1351,7 @@ function openDialog(mode, item = null) {
   const configs = {
     system: { title: "Add System", fields: systemFields() },
     editSystem: { title: "Edit System", fields: systemFields(item || system) },
+    editSystemAdmin: { title: "Edit System", fields: systemFields(item || system, { admin: true }) },
     editStatusHistory: { title: "Edit Status Event", fields: statusHistoryFields(item) },
     editLocation: { title: `Edit ${initialLocation}`, fields: locationFields(item) },
     maintenance: {
@@ -1397,7 +1407,7 @@ function openDialog(mode, item = null) {
   dialogTitle.textContent = configs[mode].title;
   saveDialogButton.textContent = "Save";
   dialogFields.innerHTML = configs[mode].fields.map(renderField).join("");
-  if (mode === "editSystem") {
+  if (mode === "editSystem" || mode === "editSystemAdmin") {
     dialogFields.insertAdjacentHTML("beforeend", renderStatusHistoryManager(item || system));
     bindStatusHistoryManager();
   }
@@ -1411,7 +1421,9 @@ function openDialog(mode, item = null) {
 async function saveDialog() {
   const data = formPayload(entryForm);
   const system = getCurrentSystem();
-  const targetSystem = dialogMode === "editSystem" ? editingItem || system : system;
+  const targetSystem = ["editSystem", "editSystemAdmin"].includes(dialogMode)
+    ? editingItem || system
+    : system;
 
   try {
     if (dialogMode === "system") {
@@ -1424,7 +1436,7 @@ async function saveDialog() {
       return;
     }
 
-    if (dialogMode === "editSystem" && targetSystem) {
+    if (["editSystem", "editSystemAdmin"].includes(dialogMode) && targetSystem) {
       await sendJson(`/api/systems/${targetSystem.id}`, { method: "PUT", body: JSON.stringify(data) });
     }
 
@@ -1546,11 +1558,24 @@ async function deleteItem(type, id) {
   if (type === "system" && pageMode === "system") window.location.href = "/";
 }
 
-function systemFields(system = {}) {
+function systemFields(system = {}, options = {}) {
   system = system || {};
+  let locationField;
+  if (!system.id) {
+    locationField = field("location", "Location", "text", system.location || "");
+  } else if (options.admin) {
+    const locations = activeLocations().map((location) => location.name);
+    if (system.location && !locations.includes(system.location)) locations.push(system.location);
+    locationField = field("location", "Location", "select", system.location || "", locations);
+  } else {
+    locationField = {
+      ...field("location", "Location", "locked", system.location || ""),
+      help: "Location changes and renames are managed from the admin page.",
+    };
+  }
   return [
     field("name", "System Name", "text", system.name || ""),
-    field("location", "Location", "text", system.location || ""),
+    locationField,
     field("status", "Status", "select", system.status || "Operational", [
       "Operational",
       "Needs Maintenance",
@@ -1788,6 +1813,8 @@ function renderField(config) {
         }).join("")}
       </div>
     `;
+  } else if (config.type === "locked") {
+    control = `<input ${common} class="locked-field" type="text" value="${escapeAttribute(config.value)}" readonly />`;
   } else {
     control = `<input ${common} type="${config.type}" value="${escapeAttribute(config.value)}" />`;
   }
@@ -1796,6 +1823,7 @@ function renderField(config) {
     <div class="field-group">
       <label for="${config.name}">${escapeHtml(config.label)}</label>
       ${control}
+      ${config.help ? `<small class="field-help">${escapeHtml(config.help)}</small>` : ""}
     </div>
   `;
 }

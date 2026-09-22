@@ -1,0 +1,19 @@
+[Unit]
+Description=TeraCota verified measurement summary import
+After=network.target teracota.service
+
+[Service]
+Type=oneshot
+User=teracota
+Group=teracota
+WorkingDirectory=/opt/teracota
+EnvironmentFile=/opt/teracota/.env
+Environment=PYTHONDONTWRITEBYTECODE=1
+ExecStart=/opt/teracota/.venv/bin/python -m measurements.importer
+UMask=0027
+NoNewPrivileges=true
+PrivateDevices=true
+PrivateTmp=true
+ProtectHome=true
+ProtectSystem=full
+ReadWritePaths=/var/lib/teracota

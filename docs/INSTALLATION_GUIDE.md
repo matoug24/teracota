@@ -10,13 +10,30 @@ It is written for the current deployment:
 - Git branch: `main`
 - Server operating system: Ubuntu 24.04 LTS
 - Application directory: `/opt/teracota`
-- Database: `/var/lib/teracota/teracota.sqlite3`
+- Operations database: `/var/lib/teracota/teracota.sqlite3`
+- Measurement data: `/var/lib/teracota/measurements`
 - Database backups: `/var/backups/teracota`
 - Linux service account: `teracota`
 - Public repository during the normal installation
 
 A separate section near the end explains exactly what changes if the GitHub
 repository becomes private.
+
+Related documentation:
+
+- `../README.md` covers local setup, architecture, routes, and development checks.
+- `MEASUREMENT_UPLOAD_GUIDE.md` covers production-PC upload configuration and verification.
+
+Use the runbook by task:
+
+| Task | Section |
+| --- | --- |
+| Brand-new public-repository installation | Sections 3-16 |
+| Deploy a normal application update | Section 17 |
+| Check, back up, restore, or reset data | Section 18 |
+| Diagnose website, login, database, measurement, or server failures | Section 19 |
+| Change the GitHub repository to private | Section 20 |
+| Rebuild or replace the Lightsail instance | Section 21 |
 
 ## 1. Understand the deployment
 
@@ -28,7 +45,9 @@ Browser
   -> Nginx
   -> Gunicorn on 127.0.0.1:8000
   -> Flask
-  -> SQLite
+  -> operations SQLite database
+  -> measurement summary and upload-control SQLite databases
+  -> private uploaded CSV object storage
 ```
 
 Each part has one job:
@@ -40,7 +59,12 @@ Each part has one job:
 - **Gunicorn** runs the Flask application in production.
 - **systemd** starts Gunicorn at boot and restarts it after a failure.
 - **Flask** serves pages and APIs and applies additive SQLite migrations at startup.
-- **SQLite** stores systems, visits, issues, tasks, settings, deleted records, and visitor logs.
+- **The operations database** stores systems, visits, issues, updates, tasks,
+  settings, source mappings, deleted records, and visitor logs.
+- **The measurement databases** store compact CSV summaries and upload/import
+  receipts separately from maintenance records.
+- **The object store** keeps uploaded CSV files on protected Lightsail storage
+  by default, or in a private S3 bucket when configured.
 
 Do not expose ports `8000` or `8765` through the Lightsail firewall. Nginx is the
 only public web entry point.
@@ -57,7 +81,10 @@ Keeping code, secrets, and data separate makes Git updates and future rebuilds s
 | --- | --- | --- |
 | Application code | `/opt/teracota` | Yes |
 | Production settings and password | `/opt/teracota/.env` | No |
-| SQLite database | `/var/lib/teracota/teracota.sqlite3` | No |
+| Operations SQLite database | `/var/lib/teracota/teracota.sqlite3` | No |
+| Measurement summary database | `/var/lib/teracota/measurements/vehicle_summaries.sqlite3` | No |
+| Upload queue database | `/var/lib/teracota/measurements/upload_control.sqlite3` | No |
+| Filesystem CSV object store | `/var/lib/teracota/measurements/object_store/` | No |
 | Automatic/manual backups | `/var/backups/teracota` | No |
 | systemd service | `/etc/systemd/system/teracota.service` | Installed from the repo |
 | Live Nginx configuration | `/etc/nginx/sites-available/teracota` | Initially installed from the repo |
@@ -89,7 +116,8 @@ For a completely new server, follow these sections in order:
 12. Run the verification checklist.
 
 For a replacement server with existing data, follow the same process, then
-restore a SQLite or CSV backup before users add new records.
+restore the operations database and measurement-data backup before users add
+new records or upload new measurements.
 
 ## 4. Prepare the public GitHub repository
 
@@ -99,14 +127,15 @@ Run these commands in Windows PowerShell from the local project directory:
 git remote -v
 git branch --show-current
 git status --short
-git check-ignore -v .env teracota.sqlite3
+git check-ignore -v .env teracota.sqlite3 measurement_data measurement_uploader/uploader_config.json
 ```
 
 Expected results:
 
 - `origin` points to `https://github.com/matoug24/teracota.git`.
 - The active branch is `main`.
-- `.env` and `teracota.sqlite3` are reported as ignored.
+- `.env`, `teracota.sqlite3`, `measurement_data/`, and the real uploader config
+  are reported as ignored.
 
 Review and push the application:
 
@@ -118,8 +147,9 @@ git push origin main
 ```
 
 Inspect the public repository in a browser. Confirm that it contains
-`.env.example`, but does not contain `.env`, any `*.sqlite3` file, a private key,
-or a real password.
+`.env.example`, but does not contain `.env`, any `*.sqlite3` file,
+`measurement_data/`, `measurement_uploader/uploader_config.json`, a private key,
+or a real password/token.
 
 ## 5. Create the Lightsail server
 
@@ -269,13 +299,16 @@ The virtual environment isolates TeraCota's dependencies from Ubuntu's Python.
 Verify the imports:
 
 ```bash
-sudo -u teracota /opt/teracota/.venv/bin/python -c \
-  "import flask, gunicorn; print('Python dependencies are ready')"
+sudo -u teracota bash -lc \
+  'cd /opt/teracota && .venv/bin/python -c "import flask, gunicorn, measurements; print(\"Python dependencies are ready\")"'
+sudo -u teracota bash -lc \
+  'cd /opt/teracota && .venv/bin/python -m compileall -q app.py wsgi.py gunicorn.conf.py measurements'
 ```
 
 ## 12. Create the production environment file
 
-Generate a random Flask session secret:
+Generate two different random values: one Flask session secret and one uploader
+API token. Run the command twice and do not reuse the output:
 
 ```bash
 python3 -c 'import secrets; print(secrets.token_hex(32))'
@@ -301,6 +334,10 @@ TERACOTA_DB_PATH=/var/lib/teracota/teracota.sqlite3
 TERACOTA_BEHIND_PROXY=true
 TERACOTA_COOKIE_SECURE=true
 TERACOTA_SEED_DEMO=false
+TERACOTA_MEASUREMENT_DATA_DIR=/var/lib/teracota/measurements
+TERACOTA_MEASUREMENT_UPLOAD_TOKEN="USE_A_DIFFERENT_RANDOM_TOKEN_OF_AT_LEAST_24_CHARACTERS"
+TERACOTA_MEASUREMENT_STORAGE_BACKEND=filesystem
+TERACOTA_MEASUREMENT_MAX_UPLOAD_BYTES=26214400
 ```
 
 | Variable | Purpose |
@@ -313,6 +350,10 @@ TERACOTA_SEED_DEMO=false
 | `TERACOTA_BEHIND_PROXY` | Trusts Nginx's forwarded protocol and IP headers. |
 | `TERACOTA_COOKIE_SECURE` | Sends the login cookie only over HTTPS. |
 | `TERACOTA_SEED_DEMO` | Keeps a new production database empty. |
+| `TERACOTA_MEASUREMENT_DATA_DIR` | Stores compact analytics, upload receipts, and filesystem-backed uploaded CSV files. |
+| `TERACOTA_MEASUREMENT_UPLOAD_TOKEN` | Authenticates the independent uploader. Do not reuse the website password. |
+| `TERACOTA_MEASUREMENT_STORAGE_BACKEND` | Uses protected Lightsail disk storage (`filesystem`) or a private S3 bucket (`s3`). |
+| `TERACOTA_MEASUREMENT_MAX_UPLOAD_BYTES` | Maximum size of one uploaded CSV file. |
 
 The app refuses to start in production if the password is still `pythagorus` or
 the session key is still the development default.
@@ -331,6 +372,8 @@ root teracota 640 /opt/teracota/.env
 ```
 
 The `.env` file is ignored by Git, so a pull will not overwrite the password.
+The Flask application does not parse `.env` itself; systemd loads it through the
+`EnvironmentFile` setting in both service definitions.
 
 ## 13. Install and start systemd
 
@@ -338,14 +381,22 @@ The `.env` file is ignored by Git, so a pull will not overwrite the password.
 sudo install -o root -g root -m 0644 \
   /opt/teracota/deploy/teracota.service \
   /etc/systemd/system/teracota.service
+sudo install -o root -g root -m 0644 \
+  /opt/teracota/deploy/teracota-measurement-import.service \
+  /etc/systemd/system/teracota-measurement-import.service
+sudo install -o root -g root -m 0644 \
+  /opt/teracota/deploy/teracota-measurement-import.timer \
+  /etc/systemd/system/teracota-measurement-import.timer
 sudo systemctl daemon-reload
 sudo systemctl enable --now teracota
+sudo systemctl enable --now teracota-measurement-import.timer
 ```
 
 Check the service and private health endpoint:
 
 ```bash
 sudo systemctl status teracota --no-pager
+sudo systemctl status teracota-measurement-import.timer --no-pager
 curl -fsS http://127.0.0.1:8000/healthz
 ```
 
@@ -357,7 +408,22 @@ Expected response:
 
 At startup, `wsgi.py` calls `init_db()`. It creates a database when none exists
 and adds required columns when the schema grows. Existing records are not removed
-by these additive migrations.
+by these additive migrations. It also creates the measurement summary and
+upload-control databases under `TERACOTA_MEASUREMENT_DATA_DIR`.
+
+The measurement import timer checks verified uploads every 15 minutes. Run it
+immediately when testing a new uploader:
+
+```bash
+sudo systemctl start teracota-measurement-import.service
+sudo journalctl -u teracota-measurement-import.service -n 100 --no-pager
+```
+
+The importer service runs from the reorganized package with:
+
+```text
+/opt/teracota/.venv/bin/python -m measurements.importer
+```
 
 If startup fails:
 
@@ -442,9 +508,12 @@ Verify in a browser:
 3. Login works with the `.env` credentials.
 4. The Systems dashboard loads.
 5. `/admin`, `/statistics`, and `/logs` load after login.
-6. Add a temporary system, issue, and visit and test editing.
-7. Restart the service and confirm the records remain.
-8. Delete the temporary records.
+6. Static assets under `/assets/css`, `/assets/js`, and
+   `/assets/measurements` load without HTTP 404 errors.
+7. Add a temporary system, issue, and visit and test editing.
+8. Open Measurement History from its system and location pages.
+9. Restart the service and confirm the records remain.
+10. Delete the temporary records.
 
 With `TERACOTA_SEED_DEMO=false`, a new database has no systems. The **Add System**
 button should still be visible after login.
@@ -468,6 +537,24 @@ sudo -u teracota git -C /opt/teracota pull --ff-only origin main
 sudo bash /opt/teracota/deploy/update_lightsail.sh
 ```
 
+### One-time command for the reorganized Measurement History release
+
+The server currently has the updater from before the `measurements/`,
+`templates/`, and `static/` reorganization. For this one release, run the update
+command twice:
+
+```bash
+sudo update-teracota
+sudo update-teracota
+```
+
+The first run pulls the reorganized repository using the updater already
+installed on the server. The second run uses the newly pulled updater and
+installs/enables the Measurement History importer service and timer. Confirm
+both runs finish successfully. This is required only once; later releases use
+one command because the new updater automatically switches to a newly pulled
+version of itself.
+
 Every later deployment is one command, run from any directory:
 
 ```bash
@@ -480,18 +567,21 @@ The updater:
 
 1. Prevents two simultaneous updates.
 2. Stops if the server checkout has uncommitted changes.
-3. Creates a timestamped SQLite backup.
+3. Creates a timestamped backup of the main operations database.
 4. Fast-forwards `origin/main`.
 5. Installs current Python requirements.
-6. Compiles Python files to catch syntax errors.
-7. Updates and reloads the systemd service definition.
+6. Compiles `app.py`, WSGI files, and the `measurements` package to catch syntax errors.
+7. Updates and reloads the application and measurement importer service definitions.
 8. Validates the live Nginx configuration.
 9. Restarts TeraCota, which runs database migrations.
 10. Waits for `/healthz` before reloading Nginx.
 11. Prints commits and the database backup path.
 
-It preserves `.env`, `.venv`, the SQLite database, backups, and Certbot's live
-HTTPS configuration.
+It preserves `.env`, `.venv`, all SQLite databases, measurement objects,
+backups, and Certbot's live HTTPS configuration. Its automatic pre-update backup
+covers only the main operations database. Back up the measurement directory
+separately as described in Section 18, especially before storage or importer
+changes.
 
 After updating, hard-refresh with `Ctrl+F5` so HTML, JavaScript, and CSS come from
 the same release.
@@ -523,30 +613,47 @@ you intentionally need to invalidate every existing session.
 
 ## 18. Database operations
 
-The database contains application records and visitor logs. It does not contain
-the login password; that remains in `.env`.
+TeraCota has three SQLite databases plus an optional filesystem object store:
 
-The admin CSV export excludes visitor logs. Use SQLite backup for a complete copy.
+| Data | Production path |
+| --- | --- |
+| Operations, settings, mappings, and visitor logs | `/var/lib/teracota/teracota.sqlite3` |
+| Compact measurement summaries | `/var/lib/teracota/measurements/vehicle_summaries.sqlite3` |
+| Upload receipts and import queue | `/var/lib/teracota/measurements/upload_control.sqlite3` |
+| Raw uploaded CSV objects | `/var/lib/teracota/measurements/object_store/` |
 
-### Confirm path, size, and integrity
+The password and session secret are not in a database; they remain in `.env`.
+
+The admin CSV export includes operational records and measurement configuration,
+but excludes visitor logs, compact measurement summaries, upload receipts, and
+raw CSV objects. Use database and object-store backups for a complete recovery.
+
+### Confirm paths, sizes, free space, and integrity
 
 ```bash
-sudo grep '^TERACOTA_DB_PATH=' /opt/teracota/.env
-sudo ls -lh /var/lib/teracota/
-sudo du -h /var/lib/teracota/teracota.sqlite3
-sudo du -ch /var/lib/teracota/teracota.sqlite3*
-sudo stat -c '%n: %s bytes' /var/lib/teracota/teracota.sqlite3*
+sudo grep -E '^TERACOTA_(DB_PATH|MEASUREMENT_DATA_DIR)=' /opt/teracota/.env
+sudo ls -lah /var/lib/teracota/
+sudo ls -lah /var/lib/teracota/measurements/
+sudo du -sh /var/lib/teracota/teracota.sqlite3*
+sudo du -sh /var/lib/teracota/measurements
 df -h /
 sudo -u teracota sqlite3 /var/lib/teracota/teracota.sqlite3 \
   'PRAGMA integrity_check;'
+sudo -u teracota sqlite3 \
+  /var/lib/teracota/measurements/vehicle_summaries.sqlite3 \
+  'PRAGMA integrity_check;'
+sudo -u teracota sqlite3 \
+  /var/lib/teracota/measurements/upload_control.sqlite3 \
+  'PRAGMA integrity_check;'
 ```
 
-The integrity result should be `ok`. Substitute the configured database path if
-it differs from `/var/lib/teracota/teracota.sqlite3`.
+Each integrity check should print `ok`. Substitute the configured paths when
+`.env` uses different values.
 
-### Create a consistent backup
+### Create an online operations backup
 
-SQLite's `.backup` command is safe while the app is running:
+SQLite's `.backup` command creates a consistent copy while the application is
+running. This is what the one-command updater does for the main database:
 
 ```bash
 STAMP=$(date +%Y%m%d-%H%M%S)
@@ -555,70 +662,140 @@ sudo -u teracota sqlite3 /var/lib/teracota/teracota.sqlite3 \
 sudo ls -lh /var/backups/teracota/
 ```
 
-Keep a backup outside Lightsail. A backup on the same disk does not protect
-against loss of the whole server.
+### Create a complete coordinated backup
 
-### Restore a SQLite backup
-
-```bash
-sudo systemctl stop teracota
-sudo rm -f -- \
-  /var/lib/teracota/teracota.sqlite3-wal \
-  /var/lib/teracota/teracota.sqlite3-shm
-sudo -u teracota sqlite3 /var/lib/teracota/teracota.sqlite3 \
-  ".restore '/var/backups/teracota/teracota-YYYYMMDD-HHMMSS.sqlite3'"
-sudo systemctl start teracota
-curl -fsS http://127.0.0.1:8000/healthz
-```
-
-Inspect several records after restoration.
-
-### Reset the database and start fresh
-
-This permanently removes systems, visits, issues, development items, settings,
-deleted records, and visitor logs. It does not remove `.env`, so credentials stay.
-
-Stop the app and create a final backup:
+Use this before rebuilding, moving servers, resetting data, or changing the
+measurement storage implementation. It briefly stops uploads and imports so all
+components represent the same point in time:
 
 ```bash
-sudo systemctl stop teracota
 STAMP=$(date +%Y%m%d-%H%M%S)
+sudo systemctl stop teracota-measurement-import.timer
+sudo systemctl stop teracota-measurement-import.service
+sudo systemctl stop teracota
 sudo -u teracota sqlite3 /var/lib/teracota/teracota.sqlite3 \
-  ".backup '/var/backups/teracota/before-reset-${STAMP}.sqlite3'"
+  ".backup '/var/backups/teracota/teracota-${STAMP}.sqlite3'"
+sudo -u teracota sqlite3 \
+  /var/lib/teracota/measurements/vehicle_summaries.sqlite3 \
+  ".backup '/var/backups/teracota/vehicle-summaries-${STAMP}.sqlite3'"
+sudo -u teracota sqlite3 \
+  /var/lib/teracota/measurements/upload_control.sqlite3 \
+  ".backup '/var/backups/teracota/upload-control-${STAMP}.sqlite3'"
+if sudo test -d /var/lib/teracota/measurements/object_store; then
+  sudo tar -C /var/lib/teracota/measurements -czf \
+    "/var/backups/teracota/measurement-objects-${STAMP}.tar.gz" object_store
+else
+  sudo tar -czf "/var/backups/teracota/measurement-objects-${STAMP}.tar.gz" \
+    --files-from /dev/null
+fi
+sudo find /var/backups/teracota -maxdepth 1 -type f \
+  -name "*-${STAMP}.*" -exec chown teracota:teracota {} \;
+sudo systemctl start teracota
+sudo systemctl start teracota-measurement-import.timer
+curl -fsS http://127.0.0.1:8000/healthz
+sudo ls -lh /var/backups/teracota/
 ```
 
-Delete the database and its working files using the explicit path:
+If S3 is configured, the object-store archive is unnecessary; protect the
+private bucket with a separate versioning and backup policy.
+
+Keep a copy outside Lightsail. Backups on the same disk do not protect against
+loss of the instance or its storage.
+
+### Restore a complete backup
+
+Replace the timestamp below with one shared by a coordinated backup:
 
 ```bash
-sudo rm -f -- \
-  /var/lib/teracota/teracota.sqlite3 \
+STAMP=YYYYMMDD-HHMMSS
+sudo systemctl stop teracota-measurement-import.timer
+sudo systemctl stop teracota-measurement-import.service
+sudo systemctl stop teracota
+sudo rm -f -- /var/lib/teracota/teracota.sqlite3-wal \
+  /var/lib/teracota/teracota.sqlite3-shm \
+  /var/lib/teracota/measurements/vehicle_summaries.sqlite3-wal \
+  /var/lib/teracota/measurements/vehicle_summaries.sqlite3-shm \
+  /var/lib/teracota/measurements/upload_control.sqlite3-wal \
+  /var/lib/teracota/measurements/upload_control.sqlite3-shm
+sudo -u teracota sqlite3 /var/lib/teracota/teracota.sqlite3 \
+  ".restore '/var/backups/teracota/teracota-${STAMP}.sqlite3'"
+sudo -u teracota sqlite3 \
+  /var/lib/teracota/measurements/vehicle_summaries.sqlite3 \
+  ".restore '/var/backups/teracota/vehicle-summaries-${STAMP}.sqlite3'"
+sudo -u teracota sqlite3 \
+  /var/lib/teracota/measurements/upload_control.sqlite3 \
+  ".restore '/var/backups/teracota/upload-control-${STAMP}.sqlite3'"
+sudo rm -rf -- /var/lib/teracota/measurements/object_store
+sudo tar -C /var/lib/teracota/measurements -xzf \
+  "/var/backups/teracota/measurement-objects-${STAMP}.tar.gz"
+sudo chown -R teracota:teracota /var/lib/teracota
+sudo systemctl start teracota
+sudo systemctl start teracota-measurement-import.timer
+curl -fsS http://127.0.0.1:8000/healthz
+```
+
+Run all three integrity checks and inspect records in the browser afterward.
+
+### Reset only operations records
+
+This removes systems, visits, issues, updates, tasks, mappings, deleted records,
+and visitor logs. It leaves measurement summaries and uploaded objects in place,
+but they will no longer have valid system mappings until locations and systems
+are recreated.
+
+After creating a backup, run:
+
+```bash
+sudo systemctl stop teracota
+sudo rm -f -- /var/lib/teracota/teracota.sqlite3 \
   /var/lib/teracota/teracota.sqlite3-wal \
   /var/lib/teracota/teracota.sqlite3-shm
+sudo systemctl start teracota
+curl -fsS http://127.0.0.1:8000/healthz
 ```
 
-Start the app to create a fresh schema:
+### Reset everything and start fresh
+
+This permanently removes operations, visitor logs, measurement summaries,
+upload receipts, and filesystem-backed uploaded CSV objects. It does not remove
+`.env`, so login credentials and the upload token remain unchanged.
+
+Create a complete backup first, then run:
 
 ```bash
+sudo systemctl stop teracota-measurement-import.timer
+sudo systemctl stop teracota-measurement-import.service
+sudo systemctl stop teracota
+sudo rm -f -- /var/lib/teracota/teracota.sqlite3 \
+  /var/lib/teracota/teracota.sqlite3-wal \
+  /var/lib/teracota/teracota.sqlite3-shm
+sudo rm -rf -- /var/lib/teracota/measurements
+sudo install -d -o teracota -g teracota -m 0750 \
+  /var/lib/teracota/measurements
 sudo systemctl start teracota
-sudo systemctl status teracota --no-pager
+sudo systemctl start teracota-measurement-import.timer
 curl -fsS http://127.0.0.1:8000/healthz
-sudo ls -lh /var/lib/teracota/
 ```
 
-`TERACOTA_SEED_DEMO=false` means no sample systems are added.
+`TERACOTA_SEED_DEMO=false` means the new operations database has no sample
+systems. Windows uploader journals still remember previous uploads; decide
+whether historical files should be uploaded again before restarting each task.
 
 ### Move data to a replacement server
 
-Preferred application-data method:
+For operational records only, export CSV from `/admin`, install the new server,
+and restore the CSV there. This does not move visitor logs or Measurement History.
 
-1. Export CSV from `/admin` on the old server.
-2. Install and verify the new server.
-3. Restore the CSV from `/admin` on the new server.
-4. Verify systems, visits, issues, tasks, settings, and deleted records.
+For a complete move:
 
-CSV does not move visitor logs. To move everything, create a SQLite `.backup`,
-securely copy it, stop the new app, and restore it. Do not copy a live SQLite file
-directly while the old app may be writing to it.
+1. Create a coordinated backup on the old server.
+2. Securely copy all four backup artifacts off the old server.
+3. Install and verify the new server without accepting uploads.
+4. Copy the artifacts into `/var/backups/teracota` on the new server.
+5. Restore the complete backup.
+6. Verify all databases, systems, aliases, charts, and uploader clients.
+
+Do not copy live SQLite files directly while the old application may be writing.
 
 ## 19. Troubleshooting
 
@@ -704,10 +881,55 @@ sudo namei -l /var/lib/teracota/teracota.sqlite3
 sudo ls -la /var/lib/teracota/
 sudo chown -R teracota:teracota /var/lib/teracota
 sudo chmod 0750 /var/lib/teracota
-sudo find /var/lib/teracota -maxdepth 1 -type f -name 'teracota.sqlite3*' \
+sudo find /var/lib/teracota -type f \
+  \( -name '*.sqlite3' -o -name '*.sqlite3-wal' -o -name '*.sqlite3-shm' \) \
   -exec chmod 0640 {} \;
 sudo systemctl restart teracota
 curl -fsS http://127.0.0.1:8000/healthz
+```
+
+### Measurement History is empty or imports fail
+
+First confirm the timer, importer journal, and databases:
+
+```bash
+sudo systemctl status teracota-measurement-import.timer --no-pager
+sudo systemctl list-timers teracota-measurement-import.timer --all
+sudo journalctl -u teracota-measurement-import.service -n 150 --no-pager
+sudo -u teracota sqlite3 \
+  /var/lib/teracota/measurements/upload_control.sqlite3 \
+  'SELECT status,COUNT(*) FROM upload_batches GROUP BY status;'
+sudo -u teracota sqlite3 \
+  /var/lib/teracota/measurements/vehicle_summaries.sqlite3 \
+  'SELECT client,COUNT(*) FROM jobs GROUP BY client;'
+```
+
+If batches are `VERIFIED` but not imported, run the package directly with the
+same environment as systemd:
+
+```bash
+sudo -u teracota bash -lc \
+  'cd /opt/teracota && set -a && source .env && set +a && .venv/bin/python -m measurements.importer'
+```
+
+If the system page says a source is not mapped, add the discovered source alias
+to that system under `/admin`. See `MEASUREMENT_UPLOAD_GUIDE.md` for uploader
+diagnostics and failed-batch retry instructions.
+
+### `ModuleNotFoundError: measurements`
+
+The service definition or checkout is from an older project layout. Confirm the
+package and reinstall the current service files:
+
+```bash
+sudo -u teracota git -C /opt/teracota status --short
+sudo test -f /opt/teracota/measurements/__init__.py
+sudo install -o root -g root -m 0644 \
+  /opt/teracota/deploy/teracota-measurement-import.service \
+  /etc/systemd/system/teracota-measurement-import.service
+sudo systemctl daemon-reload
+sudo systemctl restart teracota
+sudo systemctl start teracota-measurement-import.service
 ```
 
 ### `502 Bad Gateway`
@@ -742,10 +964,38 @@ sudo certbot renew --dry-run
 
 Ports 80 and 443 must be open in Lightsail and UFW, and DNS must use the static IP.
 
+### Server became unreachable and required a reboot
+
+The application service already uses `Restart=on-failure`, so a Flask or
+Gunicorn crash should recover without rebooting Ubuntu. If SSH and the website
+both stop responding, inspect the previous boot before logs rotate:
+
+```bash
+free -h
+sudo swapon --show
+df -h /
+systemctl --failed
+sudo journalctl --list-boots
+sudo journalctl -b -1 -p warning --no-pager
+sudo journalctl -k -b -1 --no-pager | grep -Ei \
+  'oom|out of memory|killed process|panic|watchdog|i/o error'
+sudo journalctl -u teracota -b -1 -n 200 --no-pager
+sudo journalctl -u nginx -b -1 -n 100 --no-pager
+```
+
+Use `journalctl -b` for the current boot and `journalctl -b -1` for the previous
+boot. `--since boot` is not a valid timestamp expression.
+
+If memory remains close to exhausted despite active swap, move to a larger
+Lightsail plan rather than relying on repeated automatic reboots. Also create a
+Lightsail instance-status alarm and regular snapshots. Automatic host reboot can
+hide a persistent memory, disk, or kernel problem; diagnose the cause first.
+
 ### Useful live logs
 
 ```bash
 sudo journalctl -u teracota -f
+sudo journalctl -u teracota-measurement-import.service -f
 sudo tail -f /var/log/nginx/error.log
 sudo tail -f /var/log/nginx/access.log
 ```
@@ -767,7 +1017,7 @@ on the visibility change to protect a secret that was previously committed.
 ### What does not change
 
 - Domain, DNS, Nginx, Certbot, or systemd
-- `.env`, login credentials, or SQLite database
+- `.env`, login credentials, operations database, or measurement data
 - Backup process
 - The `sudo update-teracota` command after Git access is configured
 
@@ -850,12 +1100,13 @@ Credential Manager. Never copy the Lightsail deploy private key to your computer
 
 Before deleting the old instance:
 
-1. Create and download a current SQLite backup.
-2. Export an admin CSV as a second backup.
-3. Record the current Git commit.
-4. Securely record the `.env` values in a password manager.
-5. Confirm the static IP can be detached and reassigned.
-6. Take a Lightsail snapshot when practical.
+1. Create and download a complete coordinated backup from Section 18.
+2. Export an admin CSV as a second operations-only backup.
+3. Confirm the measurement object archive or private S3 data is protected.
+4. Record the current Git commit.
+5. Securely record the `.env` values in a password manager.
+6. Confirm the static IP can be detached and reassigned.
+7. Take a Lightsail snapshot when practical.
 
 Useful commands:
 
@@ -869,19 +1120,23 @@ On the replacement instance:
 
 1. Follow Sections 5 through 16.
 2. Reassign the static IP, or update DNS for a new static IP.
-3. Restore the SQLite backup or admin CSV.
+3. Restore the complete backup, or use admin CSV for operations-only recovery.
 4. Restart TeraCota.
-5. Run the complete verification checklist.
-6. Keep the old instance available until the new one is verified.
+5. Verify measurement aliases and update uploader clients if a location changed.
+6. Run the complete verification checklist.
+7. Keep the old instance available until the new one is verified.
 
 ## 22. Security and maintenance reminders
 
-- Keep `.env`, databases, backups, exports, and keys out of GitHub.
+- Keep `.env`, databases, measurement objects, uploader configs, backups,
+  exports, and keys out of GitHub.
 - Use a unique password stored in a password manager.
 - Restrict SSH port 22 to your public IP when practical.
 - Keep Ubuntu updated with `sudo apt update && sudo apt upgrade`.
 - Keep HTTPS enabled because the production login cookie is secure-only.
 - Maintain regular off-server backups.
+- Back up both measurement databases and the object store in addition to the
+  main operations database.
 - Review `/logs` for unexpected access.
 - The current app has one shared administrative login.
 - Add individual accounts, roles, rate limiting, and stronger auditing before expanding access.

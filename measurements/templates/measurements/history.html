@@ -1,0 +1,113 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Measurement History - {{ system_name or location }}</title>
+    <link id="themeStylesheet" rel="stylesheet" href="/assets/{{ theme_css }}?v=20260920-structure" />
+    <link rel="stylesheet" href="/assets/measurements/history.css?v=20260920-structure" />
+    <script src="https://cdn.plot.ly/plotly-2.35.2.min.js"></script>
+  </head>
+  <body
+    class="measurement-body"
+    data-location="{{ location }}"
+    data-system-id="{{ system_id }}"
+    data-system-name="{{ system_name }}"
+  >
+    <div class="app-shell measurement-shell">
+      <header class="topbar">
+        <div class="brand">
+          <div class="brand-mark">TC</div>
+          <div>
+            <h1>TeraCota 2000</h1>
+            <p>Automotive operations tracker</p>
+          </div>
+        </div>
+        <nav class="nav-tabs" aria-label="Measurement navigation">
+          <a class="nav-tab nav-tab-primary active measurement-nav-link" href="{{ back_url }}">Back to Operations</a>
+        </nav>
+        <div class="measurement-status" id="measurementStatus">Loading data status</div>
+      </header>
+
+      <main class="measurement-main">
+        <section class="measurement-heading">
+          <div>
+            <p class="eyebrow">{{ location }}</p>
+            <h2>Measurement History</h2>
+            {% if system_name %}<p class="measurement-context">{{ system_name }}</p>{% endif %}
+          </div>
+        </section>
+
+        <section class="measurement-filters" aria-label="Measurement filters">
+          <label>From<input id="measurementStart" type="date" /></label>
+          <label>To<input id="measurementEnd" type="date" /></label>
+          <label>Robot Source<select id="measurementSource"></select></label>
+          <label>Color<select id="measurementColor"></select></label>
+          <label>Car ID<select id="measurementCar"></select></label>
+          <label>Body ID<select id="measurementBody"></select></label>
+          <button id="applyMeasurementFilters" class="primary-button" type="button">Apply</button>
+        </section>
+
+        <section class="measurement-summary" aria-labelledby="measurementSummaryTitle">
+          <div class="measurement-section-title">
+            <div><p class="eyebrow">Current selection</p><h3 id="measurementSummaryTitle">System Summary</h3></div>
+          </div>
+          <div class="measurement-summary-grid" id="measurementSummaryGrid"></div>
+          <p class="measurement-summary-text" id="measurementSummaryText"></p>
+          <div class="measurement-warning hidden" id="measurementMappingWarning"></div>
+        </section>
+
+        <nav class="measurement-tabs" aria-label="Measurement views">
+          <button class="measurement-tab active" type="button" data-measurement-tab="operation">Operation Summary</button>
+          <button class="measurement-tab" type="button" data-measurement-tab="thickness">Thickness</button>
+          <button class="measurement-tab" type="button" data-measurement-tab="performance">System Performance</button>
+          <button class="measurement-tab" type="button" data-measurement-tab="misc">Miscellaneous Data</button>
+        </nav>
+
+        <section id="measurementPanelOperation" class="measurement-panel active">
+          <div class="measurement-section-title"><h3>Operation Summary</h3></div>
+          <div class="measurement-chart-grid">
+            <article class="measurement-chart-frame"><div id="measurementJobsChart" class="measurement-chart"></div></article>
+            <article class="measurement-chart-frame"><div id="measurementCountChart" class="measurement-chart"></div></article>
+          </div>
+        </section>
+
+        <section id="measurementPanelThickness" class="measurement-panel">
+          <div class="measurement-section-title">
+            <h3>Thickness</h3>
+            <label>View<select id="measurementThicknessView"><option value="daily">Daily mean</option><option value="car">Car mean</option></select></label>
+          </div>
+          <article class="measurement-chart-frame"><div id="measurementThicknessChart" class="measurement-chart measurement-chart-wide"></div></article>
+          <div class="measurement-table-wrap">
+            <table id="measurementThicknessTable">
+              <thead><tr><th>Job or day</th><th>Layer</th><th>N</th><th>Mean</th><th>Stdev</th><th>Min</th><th>Max</th></tr></thead>
+              <tbody></tbody>
+            </table>
+          </div>
+        </section>
+
+        <section id="measurementPanelPerformance" class="measurement-panel">
+          <div class="measurement-section-title"><h3>System Performance</h3></div>
+          <div class="measurement-chart-grid">
+            <article class="measurement-chart-frame"><div id="measurementRateChart" class="measurement-chart"></div></article>
+            <article class="measurement-chart-frame"><div id="measurementValidChart" class="measurement-chart"></div></article>
+          </div>
+        </section>
+
+        <section id="measurementPanelMisc" class="measurement-panel">
+          <div class="measurement-section-title">
+            <h3>Miscellaneous Data</h3>
+            <div class="measurement-inline-controls">
+              <label>Metric<select id="measurementMiscMetric"></select></label>
+              <label>View<select id="measurementMiscView"><option value="daily">Daily</option><option value="car">Car</option></select></label>
+              <label>Statistic<select id="measurementMiscStat"><option value="mean">Mean</option><option value="stdev">Stdev</option><option value="min">Minimum</option><option value="max">Maximum</option></select></label>
+            </div>
+          </div>
+          <article class="measurement-chart-frame"><div id="measurementMiscChart" class="measurement-chart measurement-chart-wide"></div></article>
+        </section>
+      </main>
+    </div>
+    <div id="measurementError" class="measurement-error" role="alert" hidden></div>
+    <script src="/assets/measurements/history.js?v=20260920-structure"></script>
+  </body>
+</html>

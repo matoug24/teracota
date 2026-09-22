@@ -1,0 +1,141 @@
+.measurement-admin-status {
+  margin: 14px 0;
+  padding: 11px 13px;
+  border-left: 3px solid #28846b;
+  background: #eef8f4;
+  color: #225d4f;
+  font-size: 0.84rem;
+}
+
+.measurement-admin-status.warning {
+  display: grid;
+  gap: 4px;
+  border-left-color: #c17b20;
+  background: #fff7e8;
+  color: #69410f;
+}
+
+.measurement-location-picker {
+  margin-top: 16px;
+}
+
+.measurement-client-bar,
+.measurement-mapping-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  margin-top: 18px;
+}
+
+.measurement-client-bar div,
+.measurement-mapping-header div {
+  display: grid;
+  gap: 3px;
+}
+
+.measurement-client-bar span,
+.measurement-mapping-header span {
+  color: var(--muted, #61717b);
+  font-size: 0.75rem;
+  font-weight: 750;
+  text-transform: uppercase;
+}
+
+.measurement-rename-warning {
+  margin: 10px 0 18px;
+  padding: 10px 12px;
+  border-left: 3px solid #c17b20;
+  background: #fff7e8;
+  color: #69410f;
+  font-size: 0.84rem;
+  line-height: 1.45;
+}
+
+.measurement-config-form {
+  display: grid;
+  gap: 12px;
+  padding: 16px 0 20px;
+  border-bottom: 1px solid var(--border, #d9e0e4);
+}
+
+.measurement-config-form label,
+.measurement-mapping-form label {
+  display: grid;
+  gap: 6px;
+  color: var(--muted, #61717b);
+  font-size: 0.76rem;
+  font-weight: 750;
+  text-transform: uppercase;
+}
+
+.measurement-config-form input,
+.measurement-mapping-form input,
+.measurement-mapping-form select {
+  min-width: 0;
+  height: 39px;
+  padding: 0 10px;
+  border: 1px solid var(--border, #cdd7dc);
+  border-radius: 4px;
+  background: var(--surface, #fff);
+  color: var(--text, #17232a);
+  font: inherit;
+  text-transform: none;
+}
+
+.measurement-config-pair {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 12px;
+}
+
+.measurement-save-message {
+  color: #28745f;
+  font-weight: 700;
+}
+
+.measurement-mapping-list {
+  display: grid;
+  gap: 8px;
+  margin-top: 12px;
+}
+
+.measurement-mapping-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  padding: 10px 12px;
+  border: 1px solid var(--border, #d9e0e4);
+  border-radius: 5px;
+}
+
+.measurement-mapping-row span {
+  display: grid;
+  gap: 3px;
+}
+
+.measurement-mapping-row small {
+  color: var(--muted, #61717b);
+}
+
+.measurement-mapping-form {
+  display: grid;
+  grid-template-columns: minmax(180px, 0.7fr) minmax(240px, 1fr) auto;
+  gap: 10px;
+  align-items: end;
+  margin-top: 14px;
+}
+
+@media (max-width: 760px) {
+  .measurement-config-pair,
+  .measurement-mapping-form {
+    grid-template-columns: 1fr;
+  }
+
+  .measurement-client-bar,
+  .measurement-mapping-header {
+    align-items: stretch;
+    flex-direction: column;
+  }
+}

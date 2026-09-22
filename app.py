@@ -7,8 +7,22 @@ import os
 import sqlite3
 from urllib.parse import urlsplit
 
-from flask import Flask, Response, abort, jsonify, redirect, render_template, request, send_from_directory, session, url_for
+from flask import Flask, Response, abort, jsonify, redirect, render_template, request, session, url_for
 from werkzeug.middleware.proxy_fix import ProxyFix
+
+from measurements.config import (
+    configure as configure_measurements,
+    initialize_schema as initialize_measurement_config,
+    move_system_mappings,
+)
+from measurements.database import ANALYTICS_DB as MEASUREMENT_ANALYTICS_DB
+from measurements.database import UPLOAD_DB as MEASUREMENT_UPLOAD_DB
+from measurements.database import initialize_all as initialize_measurement_databases
+from measurements.database import quick_check as measurement_quick_check
+from measurements.database import rename_client as rename_measurement_client
+from measurements.routes import create_blueprint as create_measurement_blueprint
+from measurements.settings import MAX_UPLOAD_BYTES as MEASUREMENT_MAX_UPLOAD_BYTES
+from measurements.uploads import blueprint as measurement_uploads_blueprint
 
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
@@ -16,6 +30,7 @@ DATABASE = os.environ.get(
     "TERACOTA_DB_PATH",
     os.path.join(BASE_DIR, "teracota.sqlite3"),
 )
+configure_measurements(DATABASE)
 
 
 def env_flag(name, default=False):
@@ -29,16 +44,23 @@ PRODUCTION = os.environ.get("TERACOTA_ENV", "development").strip().lower() == "p
 DEFAULT_SECRET_KEY = "teracota-local-session-key"
 DEFAULT_PASSWORD = "pythagorus"
 
-app = Flask(__name__, template_folder=BASE_DIR, static_folder=None)
+app = Flask(
+    __name__,
+    template_folder=os.path.join(BASE_DIR, "templates"),
+    static_folder=os.path.join(BASE_DIR, "static"),
+    static_url_path="/assets",
+)
 app.config.update(
     SECRET_KEY=os.environ.get("TERACOTA_SECRET_KEY", DEFAULT_SECRET_KEY),
-    MAX_CONTENT_LENGTH=10 * 1024 * 1024,
+    MAX_CONTENT_LENGTH=max(10 * 1024 * 1024, MEASUREMENT_MAX_UPLOAD_BYTES),
     SESSION_COOKIE_HTTPONLY=True,
     SESSION_COOKIE_SAMESITE="Lax",
     SESSION_COOKIE_SECURE=env_flag("TERACOTA_COOKIE_SECURE", PRODUCTION),
 )
 if env_flag("TERACOTA_BEHIND_PROXY"):
     app.wsgi_app = ProxyFix(app.wsgi_app, x_for=1, x_proto=1, x_host=1)
+app.register_blueprint(create_measurement_blueprint(lambda: THEME_FILES[get_active_theme()]))
+app.register_blueprint(measurement_uploads_blueprint)
 
 LOGIN_USERNAME = os.environ.get("TERACOTA_USERNAME", "teraview")
 LOGIN_PASSWORD = os.environ.get("TERACOTA_PASSWORD", DEFAULT_PASSWORD)
@@ -47,18 +69,14 @@ if PRODUCTION and app.config["SECRET_KEY"] == DEFAULT_SECRET_KEY:
 if PRODUCTION and LOGIN_PASSWORD == DEFAULT_PASSWORD:
     raise RuntimeError("TERACOTA_PASSWORD must be changed in production")
 THEME_FILES = {
-    "standard": "flask_styles.css",
-    "control-room": "flask_styles_control_room.css",
-    "instrument": "flask_styles_instrument.css",
-}
-APP_ASSETS = {
-    "flask_app_v3.js",
-    "flask_styles.css",
-    "flask_styles_control_room.css",
-    "flask_styles_instrument.css",
+    "standard": "css/app.css",
+    "control-room": "css/control_room.css",
+    "instrument": "css/instrument.css",
 }
 EXPORT_TABLES = (
     "systems",
+    "measurement_location_settings",
+    "measurement_source_mappings",
     "site_visits",
     "maintenance_records",
     "system_issues",
@@ -70,13 +88,26 @@ EXPORT_TABLES = (
     "app_settings",
     "deleted_items",
 )
-OPTIONAL_IMPORT_TABLES = {"system_issue_links", "system_updates"}
+OPTIONAL_IMPORT_TABLES = {
+    "measurement_location_settings",
+    "measurement_source_mappings",
+    "system_issue_links",
+    "system_updates",
+}
+
+
+class ClosingConnection(sqlite3.Connection):
+    def __exit__(self, exc_type, exc_value, traceback):
+        try:
+            return super().__exit__(exc_type, exc_value, traceback)
+        finally:
+            self.close()
 
 
 def get_db():
     database_path = os.path.abspath(DATABASE)
     os.makedirs(os.path.dirname(database_path), exist_ok=True)
-    connection = sqlite3.connect(database_path, timeout=30)
+    connection = sqlite3.connect(database_path, timeout=30, factory=ClosingConnection)
     connection.row_factory = sqlite3.Row
     connection.execute("PRAGMA foreign_keys = ON")
     connection.execute("PRAGMA busy_timeout = 30000")
@@ -267,6 +298,8 @@ def init_db():
     execute("CREATE INDEX IF NOT EXISTS idx_visitor_logs_visited_at ON visitor_logs (visited_at DESC)")
     execute("CREATE INDEX IF NOT EXISTS idx_system_updates_system_date ON system_updates (system_id, date DESC)")
     execute("CREATE INDEX IF NOT EXISTS idx_system_issue_links_system ON system_issue_links (system_id, issue_id)")
+    initialize_measurement_config()
+    initialize_measurement_databases()
     if env_flag("TERACOTA_SEED_DEMO", not PRODUCTION):
         seed_db()
     backfill_issue_links()
@@ -502,7 +535,11 @@ def safe_next_url(value):
 @app.before_request
 def enforce_authentication():
     public_endpoints = {"login_page", "login", "health_check"}
-    if is_authenticated() or request.endpoint in public_endpoints:
+    if (
+        is_authenticated()
+        or request.endpoint in public_endpoints
+        or request.blueprint == "measurement_uploads"
+    ):
         return None
     if request.path.startswith("/api/"):
         return jsonify({"message": "Authentication required"}), 401
@@ -558,6 +595,8 @@ def record_page_visit():
         "admin_page",
         "logs_page",
         "statistics_page",
+        "measurements.location_history",
+        "measurements.system_history",
     }
     if not is_authenticated() or request.method != "GET" or request.endpoint not in page_endpoints:
         return None
@@ -822,13 +861,6 @@ def render_page(page, system_id="", location=""):
     )
 
 
-@app.route("/assets/<path:filename>")
-def app_asset(filename):
-    if filename not in APP_ASSETS:
-        abort(404)
-    return send_from_directory(BASE_DIR, filename)
-
-
 def sync_locations():
     existing = {row["name"] for row in query_all("SELECT name FROM locations")}
     current_max = query_one("SELECT COALESCE(MAX(display_rank), 0) AS maximum FROM locations")
@@ -1000,6 +1032,13 @@ def health_check():
         query_one("SELECT issue_id FROM system_issue_links LIMIT 1")
         query_one("SELECT id FROM system_updates LIMIT 1")
         query_one("SELECT id FROM visitor_logs LIMIT 1")
+        query_one("SELECT location FROM measurement_location_settings LIMIT 1")
+        measurement_checks = (
+            measurement_quick_check(MEASUREMENT_ANALYTICS_DB),
+            measurement_quick_check(MEASUREMENT_UPLOAD_DB),
+        )
+        if any(result != "ok" for result in measurement_checks):
+            raise sqlite3.DatabaseError("Measurement database integrity check failed")
     except sqlite3.Error:
         app.logger.exception("TeraCota database health check failed")
         return jsonify({"status": "unhealthy"}), 503
@@ -1186,8 +1225,18 @@ def create_system():
 def update_system(system_id):
     require_login()
     payload = request.get_json(force=True)
-    previous = query_one("SELECT status FROM systems WHERE id = ?", (system_id,))
+    previous = query_one("SELECT status, location FROM systems WHERE id = ?", (system_id,))
+    if not previous:
+        abort(404)
     new_status = clean(payload.get("status"), "Operational")
+    new_location = clean(payload.get("location"), previous["location"])
+    if new_location != previous["location"]:
+        if not query_one("SELECT name FROM locations WHERE name = ?", (new_location,)):
+            return jsonify({"message": "Move the system to an existing location, or rename the location from the admin page."}), 400
+        try:
+            move_system_mappings(system_id, new_location)
+        except ValueError as exc:
+            return jsonify({"message": str(exc)}), 400
     execute(
         """
         UPDATE systems
@@ -1196,7 +1245,7 @@ def update_system(system_id):
         """,
         (
             clean(payload.get("name"), "Untitled System"),
-            clean(payload.get("location"), "Unknown Location"),
+            new_location,
             previous["status"] if previous else new_status,
             "Unassigned",
             clean(payload.get("last_visit")),
@@ -1654,6 +1703,47 @@ def update_location(location):
         """,
         (location, clean(payload.get("contacts")), clean(payload.get("notes")), display_rank),
     )
+    return jsonify(load_state())
+
+
+@app.route("/api/admin/locations/<path:location>/rename", methods=["PUT"])
+def rename_location(location):
+    require_login()
+    payload = request.get_json(force=True)
+    replacement = clean(payload.get("name"))
+    if not replacement:
+        return jsonify({"message": "A location name is required"}), 400
+    if replacement == location:
+        return jsonify(load_state())
+    if not query_one(
+        "SELECT 1 AS found FROM locations WHERE name = ? UNION SELECT 1 FROM systems WHERE location = ? LIMIT 1",
+        (location, location),
+    ):
+        abort(404)
+    if query_one(
+        "SELECT 1 AS found FROM locations WHERE name = ? UNION SELECT 1 FROM systems WHERE location = ? LIMIT 1",
+        (replacement, replacement),
+    ):
+        return jsonify({"message": "Another location already uses that name"}), 409
+
+    rename_measurement_client(location, replacement)
+    try:
+        with get_db() as db:
+            db.execute("UPDATE systems SET location = ? WHERE location = ?", (replacement, location))
+            db.execute("UPDATE site_visits SET location = ? WHERE location = ?", (replacement, location))
+            db.execute(
+                "UPDATE measurement_location_settings SET location = ? WHERE location = ?",
+                (replacement, location),
+            )
+            db.execute(
+                "UPDATE measurement_source_mappings SET location = ? WHERE location = ?",
+                (replacement, location),
+            )
+            db.execute("UPDATE locations SET name = ? WHERE name = ?", (replacement, location))
+            db.commit()
+    except Exception:
+        rename_measurement_client(replacement, location)
+        raise
     return jsonify(load_state())
 
 

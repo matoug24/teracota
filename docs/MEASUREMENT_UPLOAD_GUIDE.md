@@ -215,11 +215,10 @@ On the engineering PC:
 7. Trigger the Lightsail importer and verify the historical range in the website.
 8. Stop using this config after the historical upload is complete.
 
-One upload batch can contain at most 1,000 CSV files. If `--dry-run` lists more
-than 1,000 files, upload the history in smaller groups. A simple method is to
-point `data_directory` to one month folder at a time, set `scan_mode` to `root`,
-run the uploader, verify the server import, and then move to the next month. Keep
-the same engineering-PC journal throughout the sequence.
+One server batch can contain at most 1,000 CSV files. The uploader automatically
+splits a larger discovery into consecutive batches of up to 1,000, verifies and
+journals each completed batch, and then continues. If a later batch fails, rerun
+the same command; previously verified files are skipped.
 
 On the production PC:
 

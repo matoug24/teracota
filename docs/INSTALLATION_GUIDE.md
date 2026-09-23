@@ -916,6 +916,19 @@ If the system page says a source is not mapped, add the discovered source alias
 to that system under `/admin`. See `MEASUREMENT_UPLOAD_GUIDE.md` for uploader
 diagnostics and failed-batch retry instructions.
 
+If the page reports `The chart library could not be loaded`, confirm that the
+self-hosted Plotly bundle from the current release is installed:
+
+```bash
+sudo test -s \
+  /opt/teracota/measurements/static/vendor/plotly-basic-2.35.2.min.js \
+  && echo "Plotly bundle is installed"
+sudo update-teracota
+```
+
+Then sign in again and perform a hard refresh in the browser. Measurement
+History does not require access to an external JavaScript CDN.
+
 ### `ModuleNotFoundError: measurements`
 
 The service definition or checkout is from an older project layout. Confirm the

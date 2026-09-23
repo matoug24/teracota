@@ -21,6 +21,9 @@ import urllib.parse
 import urllib.request
 
 
+MAX_BATCH_FILES = 1000
+
+
 class ClosingConnection(sqlite3.Connection):
     def __exit__(self, exc_type, exc_value, traceback):
         try:
@@ -230,7 +233,9 @@ def discover(config: dict, journal) -> list[dict]:
         logging.info("Waiting %s seconds to verify %s stable files", config["stable_seconds"], len(pending))
         time.sleep(int(config["stable_seconds"]))
     result = []
-    for path in pending:
+    if pending:
+        logging.info("Hashing %s candidate CSV files", len(pending))
+    for index, path in enumerate(pending, start=1):
         try:
             current = path.stat()
         except FileNotFoundError:
@@ -245,6 +250,8 @@ def discover(config: dict, journal) -> list[dict]:
         result.append(
             {"path": path, "name": path.name, "size": current.st_size, "mtime_ns": current.st_mtime_ns, "mtime": current.st_mtime, "sha256": digest}
         )
+        if index % 250 == 0 or index == len(pending):
+            logging.info("Hashed %s/%s candidate files", index, len(pending))
     return result
 
 
@@ -293,6 +300,57 @@ def reconcile(config: dict, journal) -> None:
                 )
 
 
+def upload_batch(config: dict, journal, files: list[dict], expected: int) -> str:
+    prepared = retry(
+        config,
+        "batch preparation",
+        lambda: request_json(
+            config,
+            "POST",
+            "/api/uploads/prepare",
+            {
+                "source_id": config["source_id"],
+                "client": config["client"],
+                "expected_daily_files": expected,
+                "files": [
+                    {
+                        "name": item["name"],
+                        "size": item["size"],
+                        "sha256": item["sha256"],
+                        "mtime": item["mtime"],
+                    }
+                    for item in files
+                ],
+            },
+        ),
+    )
+    batch_id = prepared["batch_id"]
+    by_name = {item["name"]: item for item in files}
+    if len(by_name) != len(files):
+        raise ValueError("CSV filenames must be unique within one upload batch")
+    for remote in prepared["items"]:
+        item = by_name[remote["name"]]
+        retry(
+            config,
+            f"upload {item['name']}",
+            lambda item=item, remote=remote: upload_file(
+                config, item["path"], remote["upload"]
+            ),
+        )
+        record(journal, item, "STORED", batch_id)
+    receipt = retry(
+        config,
+        "batch verification",
+        lambda: request_json(config, "POST", f"/api/uploads/{batch_id}/complete", {}),
+    )
+    if receipt.get("status") != "VERIFIED":
+        raise RuntimeError(f"Server did not verify batch: {receipt.get('status')}")
+    for item in files:
+        record(journal, item, "VERIFIED", batch_id)
+    journal.commit()
+    return batch_id
+
+
 def run(config: dict) -> int:
     journal_path = Path(config["journal_path"])
     lock = acquire_lock(journal_path)
@@ -308,33 +366,20 @@ def run(config: dict) -> int:
             expected = max(0, int(config["expected_daily_files"]))
             if expected and len(files) < expected:
                 logging.warning("Found %s new files; approximately %s were expected", len(files), expected)
-            prepared = retry(
-                config,
-                "batch preparation",
-                lambda: request_json(
-                    config,
-                    "POST",
-                    "/api/uploads/prepare",
-                    {
-                        "source_id": config["source_id"], "client": config["client"],
-                        "expected_daily_files": expected,
-                        "files": [{"name": item["name"], "size": item["size"], "sha256": item["sha256"], "mtime": item["mtime"]} for item in files],
-                    },
-                ),
-            )
-            batch_id = prepared["batch_id"]
-            by_name = {item["name"]: item for item in files}
-            for remote in prepared["items"]:
-                item = by_name[remote["name"]]
-                retry(config, f"upload {item['name']}", lambda item=item, remote=remote: upload_file(config, item["path"], remote["upload"]))
-                record(journal, item, "STORED", batch_id)
-            receipt = retry(config, "batch verification", lambda: request_json(config, "POST", f"/api/uploads/{batch_id}/complete", {}))
-            if receipt.get("status") != "VERIFIED":
-                raise RuntimeError(f"Server did not verify batch: {receipt.get('status')}")
-            for item in files:
-                record(journal, item, "VERIFIED", batch_id)
+            batch_count = (len(files) + MAX_BATCH_FILES - 1) // MAX_BATCH_FILES
+            for batch_index, offset in enumerate(
+                range(0, len(files), MAX_BATCH_FILES), start=1
+            ):
+                batch_files = files[offset : offset + MAX_BATCH_FILES]
+                logging.info(
+                    "Uploading batch %s/%s with %s files",
+                    batch_index,
+                    batch_count,
+                    len(batch_files),
+                )
+                batch_id = upload_batch(config, journal, batch_files, expected)
+                logging.info("Batch %s is fully verified", batch_id)
             _set_state(journal, "last_successful_scan_date", date.today().isoformat())
-            logging.info("Batch %s is fully verified", batch_id)
         return 0
     finally:
         lock.close()

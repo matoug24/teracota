@@ -79,6 +79,7 @@ class MeasurementIntegrationTests(unittest.TestCase):
             "/assets/measurements/admin.js",
             "/assets/measurements/history.css",
             "/assets/measurements/history.js",
+            "/assets/measurements/vendor/plotly-basic-2.35.2.min.js",
         ):
             with self.subTest(asset_path=asset_path):
                 response = self.client.get(asset_path)
@@ -89,6 +90,14 @@ class MeasurementIntegrationTests(unittest.TestCase):
 
         anonymous = app_module.app.test_client()
         self.assertEqual(anonymous.get("/login").status_code, 200)
+
+        history = self.client.get("/measurements/location/Client%20Plant")
+        self.assertEqual(history.status_code, 200)
+        html = history.get_data(as_text=True)
+        self.assertIn(
+            'src="/assets/measurements/vendor/plotly-basic-2.35.2.min.js"', html
+        )
+        self.assertNotIn("https://cdn.plot.ly", html)
 
     def test_multiple_source_aliases_can_map_to_one_system(self):
         systems = app_module.query_all("SELECT id,name FROM systems ORDER BY id")

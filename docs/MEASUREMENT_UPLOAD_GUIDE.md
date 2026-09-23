@@ -197,6 +197,54 @@ Get-Content "$Folder\uploader.log" -Tail 100
 Do not delete `upload_journal.sqlite3` during normal operation. It is the local
 record that prevents unnecessary rediscovery and re-upload.
 
+### Initial history from one PC, then ongoing uploads from another
+
+It is safe to upload the historical archive from an engineering PC and then
+hand ongoing uploads to the production PC.
+
+On the engineering PC:
+
+1. Copy or make the complete historical result directory available locally.
+2. Create a dedicated config with the same `client` and `api_token` that the
+   production PC will use.
+3. Use a unique `source_id`, such as `engineering-pc-history`.
+4. Use a journal path local to that PC.
+5. For `YYYY/MM` folders, set `scan_mode` to `year_month` and
+   `bootstrap_all_history` to `true`.
+6. Run `--doctor`, then `--dry-run`, then the uploader with `--verbose`.
+7. Trigger the Lightsail importer and verify the historical range in the website.
+8. Stop using this config after the historical upload is complete.
+
+One upload batch can contain at most 1,000 CSV files. If `--dry-run` lists more
+than 1,000 files, upload the history in smaller groups. A simple method is to
+point `data_directory` to one month folder at a time, set `scan_mode` to `root`,
+run the uploader, verify the server import, and then move to the next month. Keep
+the same engineering-PC journal throughout the sequence.
+
+On the production PC:
+
+1. Create a separate config with the same exact `client` and `api_token`.
+2. Use a different stable `source_id`, such as `production-pc-01`.
+3. Use a new journal stored on the production PC.
+4. Keep `bootstrap_all_history` set to `false`.
+5. For the first run, use an overlap such as `initial_lookback_days: 7` so files
+   created while the historical upload was running are discovered.
+6. Run `--doctor`, `--dry-run`, and one manual `--verbose` upload.
+7. After confirming the handoff, install the daily scheduled task. The normal
+   `rescan_overlap_days` setting handles late-arriving files thereafter.
+
+Do not copy the engineering PC's uploader journal to the production PC unless
+the absolute data paths are identical. Journal entries are keyed by local file
+path. A new production journal is expected.
+
+The overlap does not duplicate stored data. When the server sees the same
+filename, size, and SHA-256 hash, it reuses the verified object instead of
+uploading the content again. The importer replaces the summary for the same
+client and filename, so processing remains idempotent.
+
+Avoid running both uploaders on schedules after the cutover. Keep the
+engineering config only as a recovery tool, with no scheduled task.
+
 ## 8. Trigger and verify the server import
 
 The timer imports verified batches every 15 minutes. To process a test batch

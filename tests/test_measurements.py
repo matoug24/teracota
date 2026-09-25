@@ -1,19 +1,23 @@
+import io
 import os
 from pathlib import Path
+import shutil
 import unittest
+import zipfile
 
 
 ROOT = Path(__file__).resolve().parents[1]
 MAIN_DB = ROOT / "codex_measurement_main_test.sqlite3"
 ANALYTICS_TEST_DB = ROOT / "codex_measurement_analytics_test.sqlite3"
 UPLOAD_TEST_DB = ROOT / "codex_measurement_upload_test.sqlite3"
+MEASUREMENT_TEST_DIR = ROOT / "codex_measurement_data_test"
 for database_path in (MAIN_DB, ANALYTICS_TEST_DB, UPLOAD_TEST_DB):
     for candidate in (database_path, Path(f"{database_path}-wal"), Path(f"{database_path}-shm")):
         candidate.unlink(missing_ok=True)
 os.environ.update(
     {
         "TERACOTA_DB_PATH": str(MAIN_DB),
-        "TERACOTA_MEASUREMENT_DATA_DIR": str(ROOT),
+        "TERACOTA_MEASUREMENT_DATA_DIR": str(MEASUREMENT_TEST_DIR),
         "TERACOTA_MEASUREMENT_ANALYTICS_DB": str(ANALYTICS_TEST_DB),
         "TERACOTA_MEASUREMENT_UPLOAD_DB": str(UPLOAD_TEST_DB),
         "TERACOTA_MEASUREMENT_UPLOAD_TOKEN": "test-measurement-token-longer-than-24-characters",
@@ -25,6 +29,7 @@ import app as app_module  # noqa: E402
 from measurements.config import save_source_mapping, source_mappings  # noqa: E402
 from measurements.database import ANALYTICS_DB, connect, replace_job_summary  # noqa: E402
 from measurements.queries import options  # noqa: E402
+from measurements.settings import OBJECT_CACHE_DIR  # noqa: E402
 from measurements.storage import sha256_path  # noqa: E402
 from measurements.summarizer import summarize_csv  # noqa: E402
 
@@ -66,6 +71,7 @@ class MeasurementIntegrationTests(unittest.TestCase):
         for path in (MAIN_DB, ANALYTICS_TEST_DB, UPLOAD_TEST_DB):
             for candidate in (path, Path(f"{path}-wal"), Path(f"{path}-shm")):
                 candidate.unlink(missing_ok=True)
+        shutil.rmtree(MEASUREMENT_TEST_DIR, ignore_errors=True)
 
     def test_unknown_upload_client_is_rejected(self):
         response = self.client.post(
@@ -77,6 +83,7 @@ class MeasurementIntegrationTests(unittest.TestCase):
         self.assertIn("existing location", response.get_json()["error"])
 
     def test_reorganized_templates_and_assets_are_served(self):
+        self.assertEqual(self.client.get("/healthz").status_code, 200)
         self.assertEqual(self.client.get("/").status_code, 200)
         for asset_path in (
             "/assets/css/app.css",
@@ -85,6 +92,8 @@ class MeasurementIntegrationTests(unittest.TestCase):
             "/assets/measurements/admin.js",
             "/assets/measurements/history.css",
             "/assets/measurements/history.js",
+            "/assets/measurements/files.css",
+            "/assets/measurements/files.js",
             "/assets/measurements/vendor/plotly-basic-2.35.2.min.js",
         ):
             with self.subTest(asset_path=asset_path):
@@ -104,6 +113,11 @@ class MeasurementIntegrationTests(unittest.TestCase):
             'src="/assets/measurements/vendor/plotly-basic-2.35.2.min.js"', html
         )
         self.assertNotIn("https://cdn.plot.ly", html)
+        self.assertIn("Raw CSV Files", html)
+
+        anonymous_files = anonymous.get("/measurements/files/Client%20Plant")
+        self.assertEqual(anonymous_files.status_code, 302)
+        self.assertIn("/login", anonymous_files.headers["Location"])
 
     def test_multiple_source_aliases_can_map_to_one_system(self):
         systems = app_module.query_all("SELECT id,name FROM systems ORDER BY id")
@@ -170,11 +184,15 @@ class MeasurementIntegrationTests(unittest.TestCase):
             },
         }
         summary = summarize_csv(sample, config)
-        replace_job_summary(
+        object_key = f"test-fixtures/{sample.name}"
+        stored_csv = OBJECT_CACHE_DIR / object_key
+        stored_csv.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copyfile(sample, stored_csv)
+        job_id = replace_job_summary(
             summary,
             {
                 "filename": sample.name,
-                "object_key": "test/sample.csv",
+                "object_key": object_key,
                 "sha256": sha256_path(sample),
                 "size_bytes": sample.stat().st_size,
             },
@@ -208,6 +226,45 @@ class MeasurementIntegrationTests(unittest.TestCase):
         self.assertEqual(weekly.status_code, 200)
         self.assertTrue(weekly.get_json()["points"])
         self.assertEqual(weekly.get_json()["points"][0]["x"], "2026-03-23")
+
+        files_page = self.client.get("/measurements/files/Client%20Plant")
+        self.assertEqual(files_page.status_code, 200)
+        files_html = files_page.get_data(as_text=True)
+        self.assertIn("Raw Measurement Files", files_html)
+        self.assertIn("March", files_html)
+        self.assertIn("Download ZIP", files_html)
+
+        listing = self.client.get(
+            "/api/measurements/files?location=Client%20Plant&year=2026&month=3"
+        )
+        self.assertEqual(listing.status_code, 200)
+        self.assertEqual(listing.get_json()["total"], 1)
+        self.assertEqual(listing.get_json()["files"][0]["id"], job_id)
+
+        individual = self.client.get(
+            f"/measurements/files/file/{job_id}", buffered=True
+        )
+        try:
+            self.assertEqual(individual.status_code, 200)
+            self.assertEqual(individual.data, sample.read_bytes())
+            self.assertIn("attachment", individual.headers["Content-Disposition"])
+        finally:
+            individual.close()
+
+        archive = self.client.get(
+            "/measurements/files/Client%20Plant/archive/2026/3", buffered=True
+        )
+        try:
+            self.assertEqual(archive.status_code, 200)
+            with zipfile.ZipFile(io.BytesIO(archive.data)) as bundle:
+                names = bundle.namelist()
+                self.assertEqual(
+                    names,
+                    [f"Client-Plant/2026/03/{sample.name}"],
+                )
+                self.assertEqual(bundle.read(names[0]), sample.read_bytes())
+        finally:
+            archive.close()
 
     def test_z_admin_location_rename_moves_measurement_history(self):
         response = self.client.put(

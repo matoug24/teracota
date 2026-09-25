@@ -1,0 +1,67 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Raw Measurement Files - {{ location }}</title>
+    <link id="themeStylesheet" rel="stylesheet" href="/assets/{{ theme_css }}?v=20260923-issues" />
+    <link rel="stylesheet" href="/assets/measurements/files.css?v=20260925-files" />
+  </head>
+  <body class="measurement-files-body" data-location="{{ location }}">
+    <div class="app-shell measurement-files-shell">
+      <header class="topbar">
+        <div class="brand">
+          <div class="brand-mark">TC</div>
+          <div><h1>TeraCota 2000</h1><p>Automotive operations tracker</p></div>
+        </div>
+        <nav class="nav-tabs" aria-label="Raw file navigation">
+          <a class="nav-tab nav-tab-primary active raw-nav-link" href="{{ back_url }}">Back to Measurement History</a>
+        </nav>
+      </header>
+
+      <main class="raw-main">
+        <header class="raw-heading">
+          <div>
+            <p class="eyebrow">{{ location }}</p>
+            <h2>Raw Measurement Files</h2>
+          </div>
+          <dl class="raw-totals">
+            <div><dt>Files</dt><dd>{{ catalog.file_count }}</dd></div>
+            <div><dt>Storage</dt><dd>{{ total_size_label }}</dd></div>
+          </dl>
+        </header>
+
+        {% if catalog.years %}
+          <div class="raw-years">
+            {% for year in catalog.years %}
+              <section class="raw-year" aria-labelledby="rawYear{{ year.year }}">
+                <header>
+                  <h3 id="rawYear{{ year.year }}">{{ year.year }}</h3>
+                  <span>{{ year.file_count }} files · {{ year.size_label }}</span>
+                </header>
+                <div class="raw-months">
+                  {% for month in year.months %}
+                    <article class="raw-month" data-year="{{ month.year }}" data-month="{{ month.month }}">
+                      <div class="raw-month-row">
+                        <button class="raw-month-toggle" type="button" aria-expanded="false">
+                          <span class="raw-month-marker" aria-hidden="true">+</span>
+                          <span><strong>{{ month.month_name }}</strong><small>{{ month.file_count }} files · {{ month.size_label }}</small></span>
+                        </button>
+                        <a class="secondary-button raw-zip-link" href="{{ month.archive_url }}">Download ZIP</a>
+                      </div>
+                      <div class="raw-month-panel" hidden></div>
+                    </article>
+                  {% endfor %}
+                </div>
+              </section>
+            {% endfor %}
+          </div>
+        {% else %}
+          <p class="raw-empty">No imported raw CSV files are available for this location.</p>
+        {% endif %}
+      </main>
+    </div>
+    <div id="rawFileError" class="raw-error" role="alert" hidden></div>
+    <script src="/assets/measurements/files.js?v=20260925-files"></script>
+  </body>
+</html>

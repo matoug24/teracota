@@ -150,6 +150,7 @@ real uploader configuration are excluded by `.gitignore`.
 | `/issues` | Open issues across all locations and systems |
 | `/measurements/system/<id>` | Measurement History filtered to one system |
 | `/measurements/location/<name>` | Measurement History for all systems at a location |
+| `/measurements/files/<name>` | Authenticated raw CSV browser and monthly ZIP downloads for one location |
 | `/admin` | System administration, ordering, recovery, export, and measurement configuration |
 | `/statistics` | Operational statistics |
 | `/logs` | Authenticated visitor records |
@@ -168,6 +169,8 @@ decision changes. They are intentionally accessed by route.
    America/Toronto, after the production upload scheduled for 1:00 AM.
 6. The importer stores compact summaries in the analytics database.
 7. Users open Measurement History from a system or location page.
+8. The **Raw CSV Files** link groups imported files by measurement year and month;
+   users can download one CSV or a complete month as a ZIP archive.
 
 The uploader `client` must exactly match a TeraCota location name. Renaming a
 location requires changing every uploader configuration for that location.

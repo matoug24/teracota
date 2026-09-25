@@ -338,6 +338,7 @@ TERACOTA_MEASUREMENT_DATA_DIR=/var/lib/teracota/measurements
 TERACOTA_MEASUREMENT_UPLOAD_TOKEN="USE_A_DIFFERENT_RANDOM_TOKEN_OF_AT_LEAST_24_CHARACTERS"
 TERACOTA_MEASUREMENT_STORAGE_BACKEND=filesystem
 TERACOTA_MEASUREMENT_MAX_UPLOAD_BYTES=26214400
+TERACOTA_MEASUREMENT_MAX_ARCHIVE_BYTES=2147483648
 ```
 
 | Variable | Purpose |
@@ -354,6 +355,7 @@ TERACOTA_MEASUREMENT_MAX_UPLOAD_BYTES=26214400
 | `TERACOTA_MEASUREMENT_UPLOAD_TOKEN` | Authenticates the independent uploader. Do not reuse the website password. |
 | `TERACOTA_MEASUREMENT_STORAGE_BACKEND` | Uses protected Lightsail disk storage (`filesystem`) or a private S3 bucket (`s3`). |
 | `TERACOTA_MEASUREMENT_MAX_UPLOAD_BYTES` | Maximum size of one uploaded CSV file. |
+| `TERACOTA_MEASUREMENT_MAX_ARCHIVE_BYTES` | Maximum combined source-file size allowed in one monthly ZIP download. The default is 2 GiB. |
 
 The app refuses to start in production if the password is still `pythagorus` or
 the session key is still the development default.
@@ -514,8 +516,9 @@ Verify in a browser:
    `/assets/measurements` load without HTTP 404 errors.
 7. Add a temporary system, issue, and visit and test editing.
 8. Open Measurement History from its system and location pages.
-9. Restart the service and confirm the records remain.
-10. Delete the temporary records.
+9. Open **Raw CSV Files**, expand a month, download one CSV, and test its monthly ZIP.
+10. Restart the service and confirm the records remain.
+11. Delete the temporary records.
 
 With `TERACOTA_SEED_DEMO=false`, a new database has no systems. The **Add System**
 button should still be visible after login.
@@ -577,10 +580,13 @@ The updater:
 8. Validates the live Nginx configuration.
 9. Restarts TeraCota, which runs database migrations.
 10. Waits for `/healthz` before reloading Nginx.
-11. Prints commits and the database backup path.
+11. Applies the application request timeout used for larger monthly CSV archives.
+12. Prints commits and the database backup path.
 
 The service can take a few seconds to bind port `8000` after the restart. The
-updater silently retries the local health check for up to 20 attempts. If the
+updater allows up to 10 seconds for each local health response and retries for
+roughly three minutes. The health route uses lightweight read-only database
+probes; full SQLite integrity checks remain available in `/admin`. If the
 service never becomes healthy, the update fails and prints the recent systemd
 journal; `Health: OK` at the end means startup completed successfully.
 

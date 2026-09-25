@@ -204,3 +204,21 @@ def quick_check(path: Path) -> str:
         return "missing"
     with connect(path) as connection:
         return str(connection.execute("PRAGMA quick_check").fetchone()[0])
+
+
+def readiness_check(path: Path, required_table: str) -> str:
+    """Confirm that a measurement database and required table are readable."""
+    if required_table not in {"jobs", "upload_batches"}:
+        raise ValueError("Unsupported readiness table")
+    if not path.is_file():
+        return "missing"
+    uri = f"{path.resolve().as_uri()}?mode=ro"
+    connection = sqlite3.connect(uri, uri=True, timeout=2)
+    try:
+        row = connection.execute(
+            "SELECT 1 FROM sqlite_master WHERE type='table' AND name=?",
+            (required_table,),
+        ).fetchone()
+        return "ok" if row else f"missing table: {required_table}"
+    finally:
+        connection.close()

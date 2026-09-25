@@ -162,6 +162,8 @@ fi
 
 upload_limit="$(awk '$1 == "client_max_body_size" { gsub(/;/, "", $2); print $2; exit }' "${NGINX_SOURCE}")"
 [[ "${upload_limit}" =~ ^[0-9]+[kKmMgG]$ ]] || fail "Invalid client_max_body_size in ${NGINX_SOURCE}"
+app_read_timeout="$(awk '$1 == "proxy_read_timeout" { gsub(/;/, "", $2); value=$2 } END { print value }' "${NGINX_SOURCE}")"
+[[ "${app_read_timeout}" =~ ^[0-9]+s$ ]] || fail "Invalid application proxy_read_timeout in ${NGINX_SOURCE}"
 
 if grep -Eq '^[[:space:]]*client_max_body_size[[:space:]]+' "${NGINX_TARGET}"; then
     sed -i -E \
@@ -172,6 +174,10 @@ else
         "/server_name[[:space:]]\+teracota\.matoug\.com;/a\\    client_max_body_size ${upload_limit};" \
         "${NGINX_TARGET}"
 fi
+
+sed -i -E \
+    "/^[[:space:]]*location[[:space:]]+\/[[:space:]]+\{/,/^[[:space:]]*\}/ s/^([[:space:]]*)proxy_read_timeout[[:space:]]+[^;]+;/\1proxy_read_timeout ${app_read_timeout};/" \
+    "${NGINX_TARGET}"
 
 if ! nginx -t; then
     if [[ -f "${nginx_backup}" ]]; then
@@ -185,14 +191,15 @@ log "Restarting TeraCota"
 systemctl restart teracota
 
 healthy=0
-for _ in {1..20}; do
+for _ in {1..18}; do
     # A connection refusal is expected briefly while Gunicorn binds its port.
+    # Allow a modest response window on small instances under memory pressure.
     # Keep retries quiet; the failure path below prints the service journal.
-    if curl --fail --silent --max-time 3 "${HEALTH_URL}" >/dev/null 2>&1; then
+    if curl --fail --silent --connect-timeout 2 --max-time 10 "${HEALTH_URL}" >/dev/null 2>&1; then
         healthy=1
         break
     fi
-    sleep 1
+    sleep 2
 done
 
 if [[ "${healthy}" -ne 1 ]]; then

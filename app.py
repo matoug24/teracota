@@ -15,10 +15,11 @@ from measurements.config import (
     initialize_schema as initialize_measurement_config,
     move_system_mappings,
 )
+from measurements.file_routes import create_file_blueprint
 from measurements.database import ANALYTICS_DB as MEASUREMENT_ANALYTICS_DB
 from measurements.database import UPLOAD_DB as MEASUREMENT_UPLOAD_DB
 from measurements.database import initialize_all as initialize_measurement_databases
-from measurements.database import quick_check as measurement_quick_check
+from measurements.database import readiness_check as measurement_readiness_check
 from measurements.database import rename_client as rename_measurement_client
 from measurements.routes import create_blueprint as create_measurement_blueprint
 from measurements.settings import MAX_UPLOAD_BYTES as MEASUREMENT_MAX_UPLOAD_BYTES
@@ -60,6 +61,7 @@ app.config.update(
 if env_flag("TERACOTA_BEHIND_PROXY"):
     app.wsgi_app = ProxyFix(app.wsgi_app, x_for=1, x_proto=1, x_host=1)
 app.register_blueprint(create_measurement_blueprint(lambda: THEME_FILES[get_active_theme()]))
+app.register_blueprint(create_file_blueprint(lambda: THEME_FILES[get_active_theme()]))
 app.register_blueprint(measurement_uploads_blueprint)
 
 LOGIN_USERNAME = os.environ.get("TERACOTA_USERNAME", "teraview")
@@ -600,6 +602,7 @@ def record_page_visit():
         "open_issues_page",
         "measurements.location_history",
         "measurements.system_history",
+        "measurement_files.raw_files_page",
     }
     if not is_authenticated() or request.method != "GET" or request.endpoint not in page_endpoints:
         return None
@@ -1042,8 +1045,8 @@ def health_check():
         query_one("SELECT id FROM visitor_logs LIMIT 1")
         query_one("SELECT location FROM measurement_location_settings LIMIT 1")
         measurement_checks = (
-            measurement_quick_check(MEASUREMENT_ANALYTICS_DB),
-            measurement_quick_check(MEASUREMENT_UPLOAD_DB),
+            measurement_readiness_check(MEASUREMENT_ANALYTICS_DB, "jobs"),
+            measurement_readiness_check(MEASUREMENT_UPLOAD_DB, "upload_batches"),
         )
         if any(result != "ok" for result in measurement_checks):
             raise sqlite3.DatabaseError("Measurement database integrity check failed")

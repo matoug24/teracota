@@ -24,6 +24,7 @@
           </div>
         </div>
         <nav class="nav-tabs" aria-label="Measurement navigation">
+          <a class="nav-tab measurement-nav-link" href="{{ url_for('measurement_files.raw_files_page', location=location) }}">Raw CSV Files</a>
           <a class="nav-tab nav-tab-primary active measurement-nav-link" href="{{ back_url }}">Back to Operations</a>
         </nav>
         <div class="measurement-status" id="measurementStatus">Loading data status</div>

@@ -18,6 +18,8 @@ be accessed.
 - Development ideas and tasks
 - Deleted issue and visit recovery from the admin page
 - Visitor logs for authenticated sessions
+- Read-only server health and rotating application logs in the admin page
+- Per-location update emails and 5:00 AM previous-day operations summaries
 - Operational statistics
 - Measurement summaries imported from production CSV files
 - Source aliases that map one or more raw robot names to a TeraCota system
@@ -27,6 +29,8 @@ be accessed.
 | Path | Purpose |
 | --- | --- |
 | `app.py` | Main Flask application, operations APIs, authentication, and schema initialization |
+| `server_monitoring.py` | Read-only server metrics, rotating application logging, and monitoring APIs |
+| `email_notifications.py` | Durable email outbox, Gmail SMTP delivery, daily summaries, and admin APIs |
 | `wsgi.py` | Gunicorn production entry point; initializes the databases before serving |
 | `templates/` | Main application and login templates |
 | `static/` | Main application JavaScript and CSS themes |
@@ -159,6 +163,12 @@ real uploader configuration are excluded by `.gitignore`.
 Do not link `/admin` or `/logs` into the main navigation unless that product
 decision changes. They are intentionally accessed by route.
 
+The admin page is divided into Monitoring, Locations, Systems, Settings, and
+Recovery. Configure each location's recipient list and select operational
+updates, daily summaries, or both under **Locations > Email Notifications**.
+SMTP credentials remain in the server-only `.env` file and are never returned
+to the browser or stored in the database.
+
 ## Measurement workflow
 
 1. Create the location and systems in TeraCota.
@@ -183,8 +193,9 @@ From the project root with the virtual environment active:
 
 ```powershell
 python -m unittest tests.test_uploader tests.test_measurements -v
-python -m compileall -q app.py wsgi.py gunicorn.conf.py measurements measurement_uploader tests
+python -m compileall -q app.py wsgi.py gunicorn.conf.py email_notifications.py server_monitoring.py measurements measurement_uploader tests
 node --check static\js\app.js
+node --check static\js\admin_notifications.js
 node --check measurements\static\admin.js
 node --check measurements\static\history.js
 git diff --check

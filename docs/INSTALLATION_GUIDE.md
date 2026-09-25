@@ -302,7 +302,7 @@ Verify the imports:
 sudo -u teracota bash -lc \
   'cd /opt/teracota && .venv/bin/python -c "import flask, gunicorn, measurements; print(\"Python dependencies are ready\")"'
 sudo -u teracota bash -lc \
-  'cd /opt/teracota && .venv/bin/python -m compileall -q app.py wsgi.py gunicorn.conf.py measurements'
+  'cd /opt/teracota && .venv/bin/python -m compileall -q app.py wsgi.py gunicorn.conf.py email_notifications.py server_monitoring.py measurements'
 ```
 
 ## 12. Create the production environment file
@@ -327,6 +327,8 @@ Set the file to:
 
 ```text
 TERACOTA_ENV=production
+TERACOTA_PUBLIC_URL=https://teracota.matoug.com
+TERACOTA_TIMEZONE=America/Toronto
 TERACOTA_SECRET_KEY=PASTE_THE_RANDOM_64_CHARACTER_VALUE
 TERACOTA_USERNAME=teraview
 TERACOTA_PASSWORD="USE_A_NEW_LONG_UNIQUE_PASSWORD"
@@ -339,11 +341,22 @@ TERACOTA_MEASUREMENT_UPLOAD_TOKEN="USE_A_DIFFERENT_RANDOM_TOKEN_OF_AT_LEAST_24_C
 TERACOTA_MEASUREMENT_STORAGE_BACKEND=filesystem
 TERACOTA_MEASUREMENT_MAX_UPLOAD_BYTES=26214400
 TERACOTA_MEASUREMENT_MAX_ARCHIVE_BYTES=2147483648
+TERACOTA_APP_LOG_PATH=/var/lib/teracota/logs/teracota.log
+TERACOTA_APP_LOG_MAX_BYTES=5242880
+TERACOTA_APP_LOG_BACKUPS=5
+TERACOTA_SMTP_HOST=smtp.gmail.com
+TERACOTA_SMTP_PORT=465
+TERACOTA_SMTP_SECURITY=ssl
+TERACOTA_SMTP_USERNAME="YOUR_GOOGLE_EMAIL_ADDRESS"
+TERACOTA_SMTP_APP_PASSWORD="YOUR_16_CHARACTER_GOOGLE_APP_PASSWORD"
+TERACOTA_SMTP_FROM="YOUR_GOOGLE_EMAIL_ADDRESS"
 ```
 
 | Variable | Purpose |
 | --- | --- |
 | `TERACOTA_ENV` | Enables production safety checks. |
+| `TERACOTA_PUBLIC_URL` | Base URL placed in notification emails. |
+| `TERACOTA_TIMEZONE` | Calendar timezone used to choose the previous day. |
 | `TERACOTA_SECRET_KEY` | Signs session cookies. Changing it logs everyone out. |
 | `TERACOTA_USERNAME` | Shared application login username. |
 | `TERACOTA_PASSWORD` | Shared application login password. |
@@ -356,6 +369,13 @@ TERACOTA_MEASUREMENT_MAX_ARCHIVE_BYTES=2147483648
 | `TERACOTA_MEASUREMENT_STORAGE_BACKEND` | Uses protected Lightsail disk storage (`filesystem`) or a private S3 bucket (`s3`). |
 | `TERACOTA_MEASUREMENT_MAX_UPLOAD_BYTES` | Maximum size of one uploaded CSV file. |
 | `TERACOTA_MEASUREMENT_MAX_ARCHIVE_BYTES` | Maximum combined source-file size allowed in one monthly ZIP download. The default is 2 GiB. |
+| `TERACOTA_APP_LOG_PATH` | Rotating JSON application log displayed in the read-only admin monitoring panel. |
+| `TERACOTA_APP_LOG_MAX_BYTES` | Size of each application log file before rotation. The example uses 5 MiB. |
+| `TERACOTA_APP_LOG_BACKUPS` | Number of rotated application log files retained. The example keeps five. |
+| `TERACOTA_SMTP_HOST`, `TERACOTA_SMTP_PORT`, `TERACOTA_SMTP_SECURITY` | Gmail SMTP connection settings. The supplied values use encrypted SMTP over port 465. |
+| `TERACOTA_SMTP_USERNAME` | Google account used to send TeraCota email. |
+| `TERACOTA_SMTP_APP_PASSWORD` | Google app password. Do not use the normal Google account password. |
+| `TERACOTA_SMTP_FROM` | Sender address shown on notification messages. Normally the same as the username. |
 
 The app refuses to start in production if the password is still `pythagorus` or
 the session key is still the development default.
@@ -375,7 +395,7 @@ root teracota 640 /opt/teracota/.env
 
 The `.env` file is ignored by Git, so a pull will not overwrite the password.
 The Flask application does not parse `.env` itself; systemd loads it through the
-`EnvironmentFile` setting in both service definitions.
+`EnvironmentFile` setting in the web, importer, and email service definitions.
 
 ## 13. Install and start systemd
 
@@ -389,9 +409,23 @@ sudo install -o root -g root -m 0644 \
 sudo install -o root -g root -m 0644 \
   /opt/teracota/deploy/teracota-measurement-import.timer \
   /etc/systemd/system/teracota-measurement-import.timer
+sudo install -o root -g root -m 0644 \
+  /opt/teracota/deploy/teracota-email-dispatch.service \
+  /etc/systemd/system/teracota-email-dispatch.service
+sudo install -o root -g root -m 0644 \
+  /opt/teracota/deploy/teracota-email-dispatch.timer \
+  /etc/systemd/system/teracota-email-dispatch.timer
+sudo install -o root -g root -m 0644 \
+  /opt/teracota/deploy/teracota-daily-email.service \
+  /etc/systemd/system/teracota-daily-email.service
+sudo install -o root -g root -m 0644 \
+  /opt/teracota/deploy/teracota-daily-email.timer \
+  /etc/systemd/system/teracota-daily-email.timer
 sudo systemctl daemon-reload
 sudo systemctl enable --now teracota
 sudo systemctl enable --now teracota-measurement-import.timer
+sudo systemctl enable --now teracota-email-dispatch.timer
+sudo systemctl enable --now teracota-daily-email.timer
 ```
 
 Check the service and private health endpoint:
@@ -399,6 +433,8 @@ Check the service and private health endpoint:
 ```bash
 sudo systemctl status teracota --no-pager
 sudo systemctl status teracota-measurement-import.timer --no-pager
+sudo systemctl status teracota-email-dispatch.timer --no-pager
+sudo systemctl status teracota-daily-email.timer --no-pager
 curl -fsS http://127.0.0.1:8000/healthz
 ```
 
@@ -434,6 +470,57 @@ If startup fails:
 ```bash
 sudo journalctl -u teracota -n 100 --no-pager
 ```
+
+### Email notification setup
+
+The Google account must have 2-Step Verification enabled. Create a dedicated
+Google app password, put it in `TERACOTA_SMTP_APP_PASSWORD`, and keep the normal
+Google account password out of the server. The application removes spaces from
+the app password before authentication.
+
+After TeraCota starts, open `/admin`, select **Locations**, and configure each
+location independently:
+
+1. Enter one or more team addresses, separated by commas or new lines.
+2. Select **Operational updates**, **Daily 5 AM summary**, or both.
+3. Save that location.
+
+Operational changes are committed to SQLite first and placed in a durable
+outbox. The dispatcher checks that outbox every minute. Delivery failure does
+not block a visit, issue, update, or system edit; the message is retried with
+increasing delays. The daily timer runs at 5:00 AM America/Toronto and queues a
+summary for the previous calendar day. `Persistent=true` means a summary missed
+while the instance was off is run after the next boot. Each location/date pair
+is queued only once.
+
+Test delivery after saving one location and making a small operational change:
+
+```bash
+sudo systemctl start teracota-email-dispatch.service
+sudo systemctl status teracota-email-dispatch.service --no-pager
+sudo journalctl -u teracota-email-dispatch.service -n 50 --no-pager
+```
+
+Test the previous-day summary manually:
+
+```bash
+sudo systemctl start teracota-daily-email.service
+sudo systemctl status teracota-daily-email.service --no-pager
+sudo journalctl -u teracota-daily-email.service -n 50 --no-pager
+```
+
+Check both schedules and their next run times:
+
+```bash
+sudo systemctl list-timers \
+  teracota-email-dispatch.timer \
+  teracota-daily-email.timer \
+  --all
+```
+
+Location recipient settings are included in the admin CSV export. Pending and
+sent outbox messages are deliberately excluded so restoring a backup cannot
+resend historical email. SMTP credentials remain only in `/opt/teracota/.env`.
 
 ## 14. Install the Nginx configuration
 
@@ -512,6 +599,7 @@ Verify in a browser:
 3. Login works with the `.env` credentials.
 4. The Systems dashboard loads.
 5. `/admin`, `/statistics`, `/issues`, and `/logs` load after login.
+   In `/admin`, confirm Server Health loads and Application Log contains the authenticated page request.
 6. Static assets under `/assets/css`, `/assets/js`, and
    `/assets/measurements` load without HTTP 404 errors.
 7. Add a temporary system, issue, and visit and test editing.
@@ -1022,9 +1110,17 @@ hide a persistent memory, disk, or kernel problem; diagnose the cause first.
 ```bash
 sudo journalctl -u teracota -f
 sudo journalctl -u teracota-measurement-import.service -f
+sudo journalctl -u teracota-email-dispatch.service -f
+sudo journalctl -u teracota-daily-email.service -f
 sudo tail -f /var/log/nginx/error.log
 sudo tail -f /var/log/nginx/access.log
+sudo tail -f /var/lib/teracota/logs/teracota.log
 ```
+
+The admin monitoring panel reads only the bounded TeraCota application log and
+local system counters. It cannot run shell commands, restart services, or read
+the wider system journal. The `/logs` route remains the separate authenticated
+visitor record.
 
 ## 20. If the GitHub repository becomes private
 

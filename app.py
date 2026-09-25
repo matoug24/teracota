@@ -10,6 +10,11 @@ from urllib.parse import urlsplit
 from flask import Flask, Response, abort, jsonify, redirect, render_template, request, session, url_for
 from werkzeug.middleware.proxy_fix import ProxyFix
 
+from email_notifications import (
+    create_notification_blueprint,
+    initialize_notification_schema,
+    queue_update_notification,
+)
 from measurements.config import (
     configure as configure_measurements,
     initialize_schema as initialize_measurement_config,
@@ -24,6 +29,11 @@ from measurements.database import rename_client as rename_measurement_client
 from measurements.routes import create_blueprint as create_measurement_blueprint
 from measurements.settings import MAX_UPLOAD_BYTES as MEASUREMENT_MAX_UPLOAD_BYTES
 from measurements.uploads import blueprint as measurement_uploads_blueprint
+from server_monitoring import (
+    configure_application_logging,
+    create_monitoring_blueprint,
+    register_request_logging,
+)
 
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
@@ -60,9 +70,13 @@ app.config.update(
 )
 if env_flag("TERACOTA_BEHIND_PROXY"):
     app.wsgi_app = ProxyFix(app.wsgi_app, x_for=1, x_proto=1, x_host=1)
+configure_application_logging(app, DATABASE)
+register_request_logging(app)
 app.register_blueprint(create_measurement_blueprint(lambda: THEME_FILES[get_active_theme()]))
 app.register_blueprint(create_file_blueprint(lambda: THEME_FILES[get_active_theme()]))
 app.register_blueprint(measurement_uploads_blueprint)
+app.register_blueprint(create_monitoring_blueprint(DATABASE))
+app.register_blueprint(create_notification_blueprint(DATABASE))
 
 LOGIN_USERNAME = os.environ.get("TERACOTA_USERNAME", "teraview")
 LOGIN_PASSWORD = os.environ.get("TERACOTA_PASSWORD", DEFAULT_PASSWORD)
@@ -87,6 +101,7 @@ EXPORT_TABLES = (
     "development_tasks",
     "system_status_history",
     "locations",
+    "notification_settings",
     "app_settings",
     "deleted_items",
 )
@@ -95,6 +110,7 @@ OPTIONAL_IMPORT_TABLES = {
     "measurement_source_mappings",
     "system_issue_links",
     "system_updates",
+    "notification_settings",
 }
 
 
@@ -308,6 +324,7 @@ def init_db():
         seed_db()
     backfill_issue_links()
     sync_locations()
+    initialize_notification_schema(DATABASE)
     normalize_location_ranks()
     backfill_status_history()
     execute("INSERT OR IGNORE INTO app_settings (key, value) VALUES ('theme', 'standard')")
@@ -517,6 +534,39 @@ def today_iso():
 
 def utc_now_iso():
     return datetime.now(timezone.utc).isoformat(timespec="seconds").replace("+00:00", "Z")
+
+
+def system_names(system_ids):
+    ids = clean_system_ids(system_ids)
+    if not ids:
+        return []
+    placeholders = ",".join("?" for _ in ids)
+    rows = query_all(
+        f"SELECT id, name FROM systems WHERE id IN ({placeholders}) ORDER BY name",
+        tuple(ids),
+    )
+    return [row["name"] for row in rows]
+
+
+def queue_operational_email(location, category, action, title, details=None):
+    if not location:
+        return
+    try:
+        queue_update_notification(
+            DATABASE,
+            location,
+            category,
+            action,
+            title,
+            details or {},
+            LOGIN_USERNAME,
+        )
+    except Exception:
+        app.logger.exception(
+            "Unable to queue %s notification for %s",
+            category,
+            location,
+        )
 
 
 def is_authenticated():
@@ -813,6 +863,19 @@ def create_grouped_site_visit(payload, fallback_system_id=None):
             ),
         )
         refresh_last_visit(system_id)
+    names = system_names(valid_ids)
+    queue_operational_email(
+        location,
+        "Site visit",
+        "Added",
+        f"{visit_date} - {', '.join(names)}",
+        {
+            "Systems": ", ".join(names),
+            "Reported by": engineer,
+            "Visit purpose": clean_categories(payload.get("type")) or "Not specified",
+            "Summary": clean(payload.get("summary")),
+        },
+    )
     return visit.lastrowid, None
 
 
@@ -1155,6 +1218,8 @@ def import_database_csv():
                     )
         for table in reversed(EXPORT_TABLES):
             db.execute(f"DELETE FROM {table}")
+        db.execute("DELETE FROM email_outbox")
+        db.execute("DELETE FROM daily_notification_runs")
         imported_rows = 0
         for table in EXPORT_TABLES:
             for row in rows_by_table[table]:
@@ -1230,6 +1295,19 @@ def create_system():
         ),
     )
     sync_locations()
+    location = clean(payload.get("location"), "Unknown Location")
+    queue_operational_email(
+        location,
+        "System",
+        "Added",
+        clean(payload.get("name"), "Untitled System"),
+        {
+            "Status": clean_system_status(payload.get("status")),
+            "Status date": clean(payload.get("status_start"), today_iso()),
+            "Status note": clean(payload.get("status_note")),
+            "Operations notes": clean(payload.get("notes")),
+        },
+    )
     return jsonify({"id": cursor.lastrowid, **load_state()})
 
 
@@ -1237,7 +1315,7 @@ def create_system():
 def update_system(system_id):
     require_login()
     payload = request.get_json(force=True)
-    previous = query_one("SELECT status, location FROM systems WHERE id = ?", (system_id,))
+    previous = query_one("SELECT name, status, location FROM systems WHERE id = ?", (system_id,))
     if not previous:
         abort(404)
     new_status = clean(payload.get("status"), "Operational")
@@ -1268,12 +1346,37 @@ def update_system(system_id):
     )
     set_system_status(system_id, new_status, payload.get("status_start"), payload.get("status_note"))
     sync_locations()
+    if new_location != previous["location"]:
+        queue_operational_email(
+            previous["location"],
+            "System",
+            "Moved",
+            clean(payload.get("name"), "Untitled System"),
+            {"New location": new_location},
+        )
+    queue_operational_email(
+        new_location,
+        "System",
+        "Edited",
+        clean(payload.get("name"), "Untitled System"),
+        {
+            "Previous name": previous["name"],
+            "Previous location": previous["location"] if previous["location"] != new_location else "",
+            "Status": new_status,
+            "Status date": clean(payload.get("status_start"), today_iso()),
+            "Status note": clean(payload.get("status_note")),
+            "Operations notes": clean(payload.get("notes")),
+        },
+    )
     return jsonify(load_state())
 
 
 @app.route("/api/systems/<int:system_id>", methods=["DELETE"])
 def delete_system(system_id):
     require_login()
+    system = query_one("SELECT name, location, status FROM systems WHERE id = ?", (system_id,))
+    if not system:
+        abort(404)
     visit_ids = [
         row["visit_id"]
         for row in query_all(
@@ -1307,6 +1410,13 @@ def delete_system(system_id):
     execute("DELETE FROM systems WHERE id = ?", (system_id,))
     for visit_id in visit_ids:
         delete_site_visit_if_empty(visit_id)
+    queue_operational_email(
+        system["location"],
+        "System",
+        "Deleted",
+        system["name"],
+        {"Last status": system["status"]},
+    )
     return jsonify(load_state())
 
 
@@ -1314,7 +1424,14 @@ def delete_system(system_id):
 def update_status_history(history_id):
     require_login()
     payload = request.get_json(force=True)
-    history = query_one("SELECT system_id FROM system_status_history WHERE id = ?", (history_id,))
+    history = query_one(
+        """
+        SELECT h.system_id,s.name AS system_name,s.location
+        FROM system_status_history h JOIN systems s ON s.id=h.system_id
+        WHERE h.id = ?
+        """,
+        (history_id,),
+    )
     if not history:
         abort(404)
     execute(
@@ -1327,13 +1444,31 @@ def update_status_history(history_id):
         ),
     )
     sync_current_status(history["system_id"])
+    queue_operational_email(
+        history["location"],
+        "Status change",
+        "Edited",
+        history["system_name"],
+        {
+            "Status": clean_system_status(payload.get("status")),
+            "Date": clean(payload.get("started_at"), today_iso()),
+            "Note": clean(payload.get("note")),
+        },
+    )
     return jsonify(load_state())
 
 
 @app.route("/api/status-history/<int:history_id>", methods=["DELETE"])
 def delete_status_history(history_id):
     require_login()
-    history = query_one("SELECT system_id FROM system_status_history WHERE id = ?", (history_id,))
+    history = query_one(
+        """
+        SELECT h.*,s.name AS system_name,s.location
+        FROM system_status_history h JOIN systems s ON s.id=h.system_id
+        WHERE h.id = ?
+        """,
+        (history_id,),
+    )
     if not history:
         abort(404)
     count = query_one(
@@ -1344,6 +1479,17 @@ def delete_status_history(history_id):
         return jsonify({"message": "A system must keep at least one status event"}), 400
     execute("DELETE FROM system_status_history WHERE id = ?", (history_id,))
     sync_current_status(history["system_id"])
+    queue_operational_email(
+        history["location"],
+        "Status change",
+        "Deleted",
+        history["system_name"],
+        {
+            "Status": history["status"],
+            "Date": history["started_at"],
+            "Note": history["note"],
+        },
+    )
     return jsonify(load_state())
 
 
@@ -1360,7 +1506,7 @@ def create_system_update(system_id):
     system_ids = clean_system_ids(payload.get("system_ids")) or [system_id]
     placeholders = ",".join("?" for _ in system_ids)
     selected_systems = query_all(
-        f"SELECT id, location FROM systems WHERE id IN ({placeholders})",
+        f"SELECT id, name, location FROM systems WHERE id IN ({placeholders})",
         tuple(system_ids),
     )
     if (
@@ -1384,13 +1530,34 @@ def create_system_update(system_id):
             ],
         )
         db.commit()
+    names = sorted(system["name"] for system in selected_systems)
+    queue_operational_email(
+        current_system["location"],
+        "System update",
+        "Added",
+        f"{update_types} - {', '.join(names)}",
+        {
+            "Date": update_date,
+            "Systems": ", ".join(names),
+            "Reported by": reported_by,
+            "Notes": notes,
+        },
+    )
     return jsonify(load_state())
 
 
 @app.route("/api/system-updates/<int:update_id>", methods=["PUT"])
 def update_system_update(update_id):
     require_login()
-    if not query_one("SELECT id FROM system_updates WHERE id = ?", (update_id,)):
+    existing = query_one(
+        """
+        SELECT u.*,s.name AS system_name,s.location
+        FROM system_updates u JOIN systems s ON s.id=u.system_id
+        WHERE u.id = ?
+        """,
+        (update_id,),
+    )
+    if not existing:
         abort(404)
     payload = request.get_json(force=True)
     update_types = clean_update_types(payload.get("update_type"))
@@ -1410,15 +1577,45 @@ def update_system_update(update_id):
             update_id,
         ),
     )
+    queue_operational_email(
+        existing["location"],
+        "System update",
+        "Edited",
+        f"{update_types} - {existing['system_name']}",
+        {
+            "Date": clean(payload.get("date"), today_iso()),
+            "Reported by": clean(payload.get("reported_by"), "Unknown"),
+            "Notes": clean(payload.get("notes")),
+        },
+    )
     return jsonify(load_state())
 
 
 @app.route("/api/system-updates/<int:update_id>", methods=["DELETE"])
 def delete_system_update(update_id):
     require_login()
-    if not query_one("SELECT id FROM system_updates WHERE id = ?", (update_id,)):
+    existing = query_one(
+        """
+        SELECT u.*,s.name AS system_name,s.location
+        FROM system_updates u JOIN systems s ON s.id=u.system_id
+        WHERE u.id = ?
+        """,
+        (update_id,),
+    )
+    if not existing:
         abort(404)
     execute("DELETE FROM system_updates WHERE id = ?", (update_id,))
+    queue_operational_email(
+        existing["location"],
+        "System update",
+        "Deleted",
+        f"{existing['update_type']} - {existing['system_name']}",
+        {
+            "Date": existing["date"],
+            "Reported by": existing["reported_by"],
+            "Notes": existing["notes"],
+        },
+    )
     return jsonify(load_state())
 
 
@@ -1450,7 +1647,8 @@ def create_site_visit():
 def update_site_visit(visit_id):
     require_login()
     payload = request.get_json(force=True)
-    if not query_one("SELECT id FROM site_visits WHERE id = ?", (visit_id,)):
+    visit = query_one("SELECT * FROM site_visits WHERE id = ?", (visit_id,))
+    if not visit:
         abort(404)
     visit_date = clean(payload.get("date"), today_iso())
     engineer = clean(payload.get("engineer"), "Unknown engineer")
@@ -1465,6 +1663,18 @@ def update_site_visit(visit_id):
     )
     for system_id in system_ids:
         refresh_last_visit(system_id)
+    names = system_names(system_ids)
+    queue_operational_email(
+        visit["location"],
+        "Site visit",
+        "Edited",
+        f"{visit_date} - {', '.join(names)}",
+        {
+            "Systems": ", ".join(names),
+            "Reported by": engineer,
+            "Previous date": visit["date"] if visit["date"] != visit_date else "",
+        },
+    )
     return jsonify(load_state())
 
 
@@ -1483,6 +1693,13 @@ def delete_site_visit(visit_id):
             ).fetchall()
         ]
         system_ids = sorted({record["system_id"] for record in records})
+        names = [
+            row["name"]
+            for row in db.execute(
+                f"SELECT name FROM systems WHERE id IN ({','.join('?' for _ in system_ids)}) ORDER BY name",
+                tuple(system_ids),
+            ).fetchall()
+        ] if system_ids else []
         archive_deleted_item(
             db,
             "site_visit",
@@ -1495,6 +1712,16 @@ def delete_site_visit(visit_id):
         db.commit()
     for system_id in system_ids:
         refresh_last_visit(system_id)
+    queue_operational_email(
+        site_visit["location"],
+        "Site visit",
+        "Deleted",
+        f"{site_visit['date']} - {', '.join(names)}",
+        {
+            "Systems": ", ".join(names),
+            "Reported by": site_visit["engineer"],
+        },
+    )
     return jsonify(load_state())
 
 
@@ -1504,7 +1731,14 @@ def update_maintenance(record_id):
     payload = request.get_json(force=True)
     visit_date = clean(payload.get("date"), today_iso())
     engineer = clean(payload.get("engineer"), "Unknown engineer")
-    record = query_one("SELECT system_id, visit_id FROM maintenance_records WHERE id = ?", (record_id,))
+    record = query_one(
+        """
+        SELECT m.system_id,m.visit_id,s.name AS system_name,s.location
+        FROM maintenance_records m JOIN systems s ON s.id=m.system_id
+        WHERE m.id = ?
+        """,
+        (record_id,),
+    )
     if not record:
         abort(404)
     if record["visit_id"]:
@@ -1541,6 +1775,19 @@ def update_maintenance(record_id):
         ]
     for system_id in affected_systems:
         refresh_last_visit(system_id)
+    names = system_names(affected_systems)
+    queue_operational_email(
+        record["location"],
+        "Site visit",
+        "Edited",
+        f"{visit_date} - {', '.join(names)}",
+        {
+            "Systems": ", ".join(names),
+            "Reported by": engineer,
+            "Visit purpose": clean_categories(payload.get("type")) or "Not specified",
+            "Summary": clean(payload.get("summary")),
+        },
+    )
     return jsonify(load_state())
 
 
@@ -1551,7 +1798,7 @@ def delete_maintenance(record_id):
         record = db.execute("SELECT * FROM maintenance_records WHERE id = ?", (record_id,)).fetchone()
         if not record:
             abort(404)
-        system = db.execute("SELECT name FROM systems WHERE id = ?", (record["system_id"],)).fetchone()
+        system = db.execute("SELECT name, location FROM systems WHERE id = ?", (record["system_id"],)).fetchone()
         site_visit = None
         if record["visit_id"]:
             site_visit = db.execute("SELECT * FROM site_visits WHERE id = ?", (record["visit_id"],)).fetchone()
@@ -1573,6 +1820,18 @@ def delete_maintenance(record_id):
             db.execute("DELETE FROM site_visits WHERE id = ?", (record["visit_id"],))
         db.commit()
     refresh_last_visit(record["system_id"])
+    if system:
+        queue_operational_email(
+            system["location"],
+            "Site visit",
+            "Deleted",
+            f"{record['date']} - {system['name']}",
+            {
+                "Reported by": record["engineer"],
+                "Visit purpose": record["type"] or "Not specified",
+                "Summary": record["summary"],
+            },
+        )
     return jsonify(load_state())
 
 
@@ -1586,7 +1845,7 @@ def create_issue(system_id):
     system_ids = clean_system_ids(payload.get("system_ids")) or [system_id]
     placeholders = ",".join("?" for _ in system_ids)
     selected_systems = query_all(
-        f"SELECT id, location FROM systems WHERE id IN ({placeholders})",
+        f"SELECT id, name, location FROM systems WHERE id IN ({placeholders})",
         tuple(system_ids),
     )
     if (
@@ -1629,6 +1888,24 @@ def create_issue(system_id):
             current = query_one("SELECT status FROM systems WHERE id = ?", (selected_id,))
             if current and current["status"] == "Operational":
                 set_system_status(selected_id, "Needs Maintenance", payload.get("opened"))
+    names = sorted(system["name"] for system in selected_systems)
+    queue_operational_email(
+        current_system["location"],
+        "Issue",
+        "Reported",
+        clean(payload.get("title"), "Untitled issue"),
+        {
+            "Systems": ", ".join(names),
+            "Date": clean(payload.get("opened"), today_iso()),
+            "Status": issue_status,
+            "Severity": severity,
+            "Related to": clean_issue_relations(payload.get("related_to")),
+            "Reported by": clean(payload.get("reported_by"), "Unknown"),
+            "Details": clean(payload.get("notes")),
+            "Resolution notes": clean(payload.get("resolution_notes")),
+            "Closed date": closed_date,
+        },
+    )
     return jsonify(load_state())
 
 
@@ -1659,7 +1936,7 @@ def update_issue(issue_id):
         return jsonify({"message": "Select at least one system"}), 400
     placeholders = ",".join("?" for _ in system_ids)
     selected_systems = query_all(
-        f"SELECT id, location FROM systems WHERE id IN ({placeholders})",
+        f"SELECT id, name, location FROM systems WHERE id IN ({placeholders})",
         tuple(system_ids),
     )
     if (
@@ -1699,6 +1976,24 @@ def update_issue(issue_id):
             [(issue_id, selected_id) for selected_id in system_ids],
         )
         db.commit()
+    names = sorted(system["name"] for system in selected_systems)
+    queue_operational_email(
+        existing_issue["location"],
+        "Issue",
+        "Edited",
+        clean(payload.get("title"), "Untitled issue"),
+        {
+            "Systems": ", ".join(names),
+            "Date": clean(payload.get("opened"), today_iso()),
+            "Status": issue_status,
+            "Severity": clean_severity(payload.get("severity")),
+            "Related to": clean_issue_relations(payload.get("related_to")),
+            "Reported by": clean(payload.get("reported_by"), "Unknown"),
+            "Details": clean(payload.get("notes")),
+            "Resolution notes": clean(payload.get("resolution_notes")),
+            "Closed date": closed_date,
+        },
+    )
     return jsonify(load_state())
 
 
@@ -1750,6 +2045,14 @@ def rename_location(location):
             )
             db.execute(
                 "UPDATE measurement_source_mappings SET location = ? WHERE location = ?",
+                (replacement, location),
+            )
+            db.execute(
+                "UPDATE email_outbox SET location = ? WHERE location = ?",
+                (replacement, location),
+            )
+            db.execute(
+                "UPDATE daily_notification_runs SET location = ? WHERE location = ?",
                 (replacement, location),
             )
             db.execute("UPDATE locations SET name = ? WHERE name = ?", (replacement, location))
@@ -1840,7 +2143,10 @@ def delete_issue(issue_id):
         issue = db.execute("SELECT * FROM system_issues WHERE id = ?", (issue_id,)).fetchone()
         if not issue:
             abort(404)
-        system = db.execute("SELECT name FROM systems WHERE id = ?", (issue["system_id"],)).fetchone()
+        system = db.execute(
+            "SELECT name, location FROM systems WHERE id = ?",
+            (issue["system_id"],),
+        ).fetchone()
         system_ids = [
             row["system_id"]
             for row in db.execute(
@@ -1848,6 +2154,13 @@ def delete_issue(issue_id):
                 (issue_id,),
             ).fetchall()
         ]
+        names = [
+            row["name"]
+            for row in db.execute(
+                f"SELECT name FROM systems WHERE id IN ({','.join('?' for _ in system_ids)}) ORDER BY name",
+                tuple(system_ids),
+            ).fetchall()
+        ] if system_ids else []
         archive_deleted_item(
             db,
             "issue",
@@ -1858,6 +2171,22 @@ def delete_issue(issue_id):
         db.execute("DELETE FROM system_issue_links WHERE issue_id = ?", (issue_id,))
         db.execute("DELETE FROM system_issues WHERE id = ?", (issue_id,))
         db.commit()
+    if system:
+        queue_operational_email(
+            system["location"],
+            "Issue",
+            "Deleted",
+            issue["title"],
+            {
+                "Systems": ", ".join(names),
+                "Date": issue["opened"],
+                "Status": issue["status"],
+                "Severity": issue["severity"],
+                "Related to": issue["related_to"],
+                "Reported by": issue["reported_by"],
+                "Details": issue["notes"],
+            },
+        )
     return jsonify(load_state())
 
 

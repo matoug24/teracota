@@ -13,6 +13,14 @@ IMPORT_SERVICE_SOURCE="${APP_DIR}/deploy/teracota-measurement-import.service"
 IMPORT_SERVICE_TARGET="/etc/systemd/system/teracota-measurement-import.service"
 IMPORT_TIMER_SOURCE="${APP_DIR}/deploy/teracota-measurement-import.timer"
 IMPORT_TIMER_TARGET="/etc/systemd/system/teracota-measurement-import.timer"
+EMAIL_SERVICE_SOURCE="${APP_DIR}/deploy/teracota-email-dispatch.service"
+EMAIL_SERVICE_TARGET="/etc/systemd/system/teracota-email-dispatch.service"
+EMAIL_TIMER_SOURCE="${APP_DIR}/deploy/teracota-email-dispatch.timer"
+EMAIL_TIMER_TARGET="/etc/systemd/system/teracota-email-dispatch.timer"
+DAILY_EMAIL_SERVICE_SOURCE="${APP_DIR}/deploy/teracota-daily-email.service"
+DAILY_EMAIL_SERVICE_TARGET="/etc/systemd/system/teracota-daily-email.service"
+DAILY_EMAIL_TIMER_SOURCE="${APP_DIR}/deploy/teracota-daily-email.timer"
+DAILY_EMAIL_TIMER_TARGET="/etc/systemd/system/teracota-daily-email.timer"
 NGINX_SOURCE="${APP_DIR}/deploy/nginx-teracota.conf"
 NGINX_TARGET="/etc/nginx/sites-available/teracota"
 HEALTH_URL="http://127.0.0.1:8000/healthz"
@@ -74,6 +82,10 @@ done
 [[ -f "${SERVICE_SOURCE}" ]] || fail "Missing ${SERVICE_SOURCE}"
 [[ -f "${IMPORT_SERVICE_SOURCE}" ]] || fail "Missing ${IMPORT_SERVICE_SOURCE}"
 [[ -f "${IMPORT_TIMER_SOURCE}" ]] || fail "Missing ${IMPORT_TIMER_SOURCE}"
+[[ -f "${EMAIL_SERVICE_SOURCE}" ]] || fail "Missing ${EMAIL_SERVICE_SOURCE}"
+[[ -f "${EMAIL_TIMER_SOURCE}" ]] || fail "Missing ${EMAIL_TIMER_SOURCE}"
+[[ -f "${DAILY_EMAIL_SERVICE_SOURCE}" ]] || fail "Missing ${DAILY_EMAIL_SERVICE_SOURCE}"
+[[ -f "${DAILY_EMAIL_TIMER_SOURCE}" ]] || fail "Missing ${DAILY_EMAIL_TIMER_SOURCE}"
 [[ -f "${NGINX_SOURCE}" ]] || fail "Missing ${NGINX_SOURCE}"
 
 if [[ -z "${DB_PATH}" ]]; then
@@ -140,16 +152,26 @@ runuser -u "${APP_USER}" -- \
     "${APP_DIR}/app.py" \
     "${APP_DIR}/wsgi.py" \
     "${APP_DIR}/gunicorn.conf.py" \
+    "${APP_DIR}/email_notifications.py" \
+    "${APP_DIR}/server_monitoring.py" \
     "${APP_DIR}/measurements"
 
 log "Updating the systemd service"
 install -o root -g root -m 0644 "${SERVICE_SOURCE}" "${SERVICE_TARGET}"
 install -o root -g root -m 0644 "${IMPORT_SERVICE_SOURCE}" "${IMPORT_SERVICE_TARGET}"
 install -o root -g root -m 0644 "${IMPORT_TIMER_SOURCE}" "${IMPORT_TIMER_TARGET}"
+install -o root -g root -m 0644 "${EMAIL_SERVICE_SOURCE}" "${EMAIL_SERVICE_TARGET}"
+install -o root -g root -m 0644 "${EMAIL_TIMER_SOURCE}" "${EMAIL_TIMER_TARGET}"
+install -o root -g root -m 0644 "${DAILY_EMAIL_SERVICE_SOURCE}" "${DAILY_EMAIL_SERVICE_TARGET}"
+install -o root -g root -m 0644 "${DAILY_EMAIL_TIMER_SOURCE}" "${DAILY_EMAIL_TIMER_TARGET}"
 systemctl daemon-reload
 systemctl enable teracota >/dev/null
 systemctl enable teracota-measurement-import.timer >/dev/null
 systemctl restart teracota-measurement-import.timer
+systemctl enable teracota-email-dispatch.timer >/dev/null
+systemctl restart teracota-email-dispatch.timer
+systemctl enable teracota-daily-email.timer >/dev/null
+systemctl restart teracota-daily-email.timer
 
 log "Checking the live Nginx configuration"
 nginx_backup="${BACKUP_DIR}/nginx-before-update-${stamp}.conf"

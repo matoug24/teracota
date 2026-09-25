@@ -1,8 +1,10 @@
 import io
+from datetime import date
 import os
 from pathlib import Path
 import shutil
 import unittest
+from unittest.mock import patch
 import zipfile
 
 
@@ -11,6 +13,7 @@ MAIN_DB = ROOT / "codex_measurement_main_test.sqlite3"
 ANALYTICS_TEST_DB = ROOT / "codex_measurement_analytics_test.sqlite3"
 UPLOAD_TEST_DB = ROOT / "codex_measurement_upload_test.sqlite3"
 MEASUREMENT_TEST_DIR = ROOT / "codex_measurement_data_test"
+shutil.rmtree(MEASUREMENT_TEST_DIR, ignore_errors=True)
 for database_path in (MAIN_DB, ANALYTICS_TEST_DB, UPLOAD_TEST_DB):
     for candidate in (database_path, Path(f"{database_path}-wal"), Path(f"{database_path}-shm")):
         candidate.unlink(missing_ok=True)
@@ -21,11 +24,16 @@ os.environ.update(
         "TERACOTA_MEASUREMENT_ANALYTICS_DB": str(ANALYTICS_TEST_DB),
         "TERACOTA_MEASUREMENT_UPLOAD_DB": str(UPLOAD_TEST_DB),
         "TERACOTA_MEASUREMENT_UPLOAD_TOKEN": "test-measurement-token-longer-than-24-characters",
+        "TERACOTA_APP_LOG_PATH": str(MEASUREMENT_TEST_DIR / "logs" / "teracota.log"),
+        "TERACOTA_SMTP_USERNAME": "notifications@example.com",
+        "TERACOTA_SMTP_APP_PASSWORD": "test-app-password",
+        "TERACOTA_SMTP_FROM": "notifications@example.com",
         "TERACOTA_SEED_DEMO": "false",
     }
 )
 
 import app as app_module  # noqa: E402
+from email_notifications import deliver_pending, queue_daily_summaries  # noqa: E402
 from measurements.config import save_source_mapping, source_mappings  # noqa: E402
 from measurements.database import ANALYTICS_DB, connect, replace_job_summary  # noqa: E402
 from measurements.queries import options  # noqa: E402
@@ -88,6 +96,10 @@ class MeasurementIntegrationTests(unittest.TestCase):
         for asset_path in (
             "/assets/css/app.css",
             "/assets/js/app.js",
+            "/assets/js/admin_monitor.js",
+            "/assets/css/admin_monitor.css",
+            "/assets/js/admin_notifications.js",
+            "/assets/css/admin_notifications.css",
             "/assets/measurements/admin.css",
             "/assets/measurements/admin.js",
             "/assets/measurements/history.css",
@@ -118,6 +130,115 @@ class MeasurementIntegrationTests(unittest.TestCase):
         anonymous_files = anonymous.get("/measurements/files/Client%20Plant")
         self.assertEqual(anonymous_files.status_code, 302)
         self.assertIn("/login", anonymous_files.headers["Location"])
+
+    def test_admin_monitoring_is_read_only_and_authenticated(self):
+        health = self.client.get("/api/admin/server-health")
+        self.assertEqual(health.status_code, 200)
+        payload = health.get_json()
+        self.assertEqual(payload["application"]["status"], "online")
+        self.assertIn("used_percent", payload["memory"])
+        self.assertIn("free_bytes", payload["disk"]["root"])
+        self.assertIn("operations_database_bytes", payload["storage"])
+        self.assertIn("pending_batches", payload["measurements"])
+
+        self.client.get("/admin")
+        logs = self.client.get("/api/admin/application-logs?level=ALL&limit=9999")
+        self.assertEqual(logs.status_code, 200)
+        log_payload = logs.get_json()
+        self.assertEqual(log_payload["limit"], 500)
+        self.assertTrue(log_payload["entries"])
+        self.assertTrue(
+            any("GET /admin" in entry["message"] for entry in log_payload["entries"])
+        )
+        app_module.app.logger.warning("Monitoring warning test")
+        warnings = self.client.get(
+            "/api/admin/application-logs?level=WARNING&limit=100"
+        ).get_json()["entries"]
+        self.assertTrue(warnings)
+        self.assertTrue(all(entry["level"] == "WARNING" for entry in warnings))
+
+        anonymous = app_module.app.test_client()
+        before = len(self.client.get("/api/admin/application-logs?limit=500").get_json()["entries"])
+        self.assertEqual(anonymous.get("/api/admin/server-health").status_code, 401)
+        self.assertEqual(anonymous.get("/login").status_code, 200)
+        after = self.client.get("/api/admin/application-logs?limit=500").get_json()
+        self.assertEqual(len(after["entries"]), before)
+
+    def test_email_notifications_are_location_scoped_durable_and_idempotent(self):
+        anonymous = app_module.app.test_client()
+        self.assertEqual(
+            anonymous.get("/api/admin/notification-settings").status_code,
+            401,
+        )
+
+        saved = self.client.put(
+            "/api/admin/notification-settings/Client%20Plant",
+            json={
+                "recipients": "team@example.com\nsecond@example.com",
+                "update_notifications": True,
+                "daily_summary": True,
+            },
+        )
+        self.assertEqual(saved.status_code, 200)
+        setting = saved.get_json()["locations"][0]
+        self.assertEqual(setting["recipients"], ["team@example.com", "second@example.com"])
+        self.assertTrue(setting["update_notifications"])
+        self.assertTrue(setting["daily_summary"])
+
+        systems = app_module.query_all("SELECT id,name FROM systems ORDER BY id")
+        robot_one = next(system for system in systems if system["name"] == "Robot 1")
+        visit = self.client.post(
+            "/api/site-visits",
+            json={
+                "location": "Client Plant",
+                "system_ids": [robot_one["id"]],
+                "date": "2026-09-24",
+                "engineer": "Test Engineer",
+                "type": ["Calibration"],
+                "summary": "Verified reference response.",
+            },
+        )
+        self.assertEqual(visit.status_code, 200)
+        immediate = app_module.query_one(
+            "SELECT * FROM email_outbox WHERE notification_type='UPDATE' ORDER BY id DESC LIMIT 1"
+        )
+        self.assertEqual(immediate["location"], "Client Plant")
+        self.assertIn("Site visit", immediate["subject"])
+        self.assertIn("Verified reference response", immediate["body_text"])
+
+        self.assertEqual(queue_daily_summaries(MAIN_DB, date(2026, 9, 24)), 1)
+        self.assertEqual(queue_daily_summaries(MAIN_DB, date(2026, 9, 24)), 0)
+        daily = app_module.query_one(
+            "SELECT * FROM email_outbox WHERE notification_type='DAILY' ORDER BY id DESC LIMIT 1"
+        )
+        self.assertIn("Daily summary for 2026-09-24", daily["subject"])
+        self.assertIn("Site visits (1)", daily["body_text"])
+
+        sent_messages = []
+
+        class FakeSmtp:
+            def __init__(self, *args, **kwargs):
+                pass
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, exc_type, exc_value, traceback):
+                return False
+
+            def login(self, username, password):
+                self.username = username
+
+            def send_message(self, message):
+                sent_messages.append(message)
+
+        with patch("email_notifications.smtplib.SMTP_SSL", FakeSmtp):
+            sent, failed = deliver_pending(MAIN_DB)
+        self.assertEqual((sent, failed), (2, 0))
+        self.assertEqual(len(sent_messages), 2)
+        self.assertTrue(all(message["To"] == "team@example.com, second@example.com" for message in sent_messages))
+        statuses = app_module.query_all("SELECT DISTINCT status FROM email_outbox")
+        self.assertEqual(statuses, [{"status": "SENT"}])
 
     def test_multiple_source_aliases_can_map_to_one_system(self):
         systems = app_module.query_all("SELECT id,name FROM systems ORDER BY id")

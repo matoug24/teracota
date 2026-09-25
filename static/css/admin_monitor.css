@@ -1,0 +1,250 @@
+#serverMonitoringSection {
+  gap: 20px;
+}
+
+.monitor-header-actions,
+.monitor-log-controls,
+.monitor-log-heading {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.monitor-header-actions .icon-button {
+  border-color: var(--line);
+  background: var(--surface-alt);
+  color: var(--text);
+  font-size: 1.1rem;
+}
+
+.monitor-status-error {
+  border-color: var(--red);
+  color: var(--red);
+}
+
+.monitor-metric-grid {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  margin: 0;
+  border-top: 1px solid var(--line);
+  border-left: 1px solid var(--line);
+}
+
+.monitor-metric {
+  display: grid;
+  align-content: start;
+  min-width: 0;
+  min-height: 112px;
+  padding: 14px;
+  border-right: 1px solid var(--line);
+  border-bottom: 1px solid var(--line);
+}
+
+.monitor-metric dt,
+.monitor-operation-grid span,
+.monitor-log-controls label {
+  color: var(--muted);
+  font-size: 0.7rem;
+  font-weight: 850;
+  text-transform: uppercase;
+}
+
+.monitor-metric dd {
+  margin: 7px 0 2px;
+  color: var(--text);
+  font-size: 1.25rem;
+  font-weight: 850;
+}
+
+.monitor-metric small,
+.monitor-operation-grid small {
+  color: var(--muted);
+  font-size: 0.75rem;
+}
+
+.monitor-meter {
+  align-self: end;
+  width: 100%;
+  height: 4px;
+  margin-top: 11px;
+  overflow: hidden;
+  background: var(--surface-alt);
+}
+
+.monitor-meter i {
+  display: block;
+  height: 100%;
+  background: var(--blue);
+}
+
+.monitor-metric-alert dd,
+.monitor-operation-alert strong {
+  color: var(--red);
+}
+
+.monitor-metric-alert .monitor-meter i {
+  background: var(--red);
+}
+
+.monitor-operation-grid {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 0;
+  border-top: 1px solid var(--line);
+  border-bottom: 1px solid var(--line);
+}
+
+.monitor-operation-grid > div {
+  display: grid;
+  min-width: 0;
+  gap: 4px;
+  padding: 12px 14px;
+  border-right: 1px solid var(--line);
+}
+
+.monitor-operation-grid > div:last-child {
+  border-right: 0;
+}
+
+.monitor-operation-grid strong {
+  overflow-wrap: anywhere;
+  font-size: 0.88rem;
+}
+
+.monitor-log-heading {
+  justify-content: space-between;
+  padding-top: 4px;
+}
+
+.monitor-log-heading h4 {
+  margin: 3px 0 0;
+  font-size: 1rem;
+}
+
+.monitor-log-controls label {
+  display: grid;
+  gap: 4px;
+}
+
+.monitor-log-controls select {
+  min-width: 120px;
+  min-height: 36px;
+  border: 1px solid var(--line);
+  border-radius: 5px;
+  background: var(--surface);
+  color: var(--text);
+  padding: 6px 30px 6px 9px;
+  font: inherit;
+  font-size: 0.8rem;
+}
+
+.monitor-log-list {
+  max-height: 430px;
+  overflow: auto;
+  border-top: 1px solid var(--line);
+  border-bottom: 1px solid var(--line);
+}
+
+.monitor-log-row {
+  display: grid;
+  grid-template-columns: 150px 82px minmax(0, 1fr);
+  gap: 12px;
+  align-items: start;
+  padding: 9px 4px;
+  border-bottom: 1px solid var(--line);
+}
+
+.monitor-log-row:last-child {
+  border-bottom: 0;
+}
+
+.monitor-log-row time,
+.monitor-log-level {
+  color: var(--muted);
+  font-size: 0.72rem;
+  font-weight: 750;
+}
+
+.monitor-log-row[data-level="ERROR"] .monitor-log-level,
+.monitor-log-row[data-level="CRITICAL"] .monitor-log-level {
+  color: var(--red);
+}
+
+.monitor-log-row[data-level="WARNING"] .monitor-log-level {
+  color: var(--amber);
+}
+
+.monitor-log-row pre {
+  min-width: 0;
+  margin: 0;
+  overflow-wrap: anywhere;
+  white-space: pre-wrap;
+  color: var(--text);
+  font-family: ui-monospace, SFMono-Regular, Consolas, monospace;
+  font-size: 0.75rem;
+  line-height: 1.45;
+}
+
+.monitor-loading,
+.monitor-empty {
+  margin: 0;
+  padding: 18px 2px;
+  color: var(--muted);
+  font-size: 0.82rem;
+}
+
+@media (max-width: 980px) {
+  .monitor-metric-grid,
+  .monitor-operation-grid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .monitor-operation-grid > div:nth-child(2) {
+    border-right: 0;
+  }
+
+  .monitor-operation-grid > div:nth-child(-n+2) {
+    border-bottom: 1px solid var(--line);
+  }
+}
+
+@media (max-width: 660px) {
+  .monitor-metric-grid,
+  .monitor-operation-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .monitor-operation-grid > div {
+    border-right: 0;
+    border-bottom: 1px solid var(--line);
+  }
+
+  .monitor-operation-grid > div:last-child {
+    border-bottom: 0;
+  }
+
+  .monitor-log-heading,
+  .monitor-log-controls {
+    align-items: stretch;
+    flex-direction: column;
+  }
+
+  .monitor-log-controls {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .monitor-log-controls select {
+    width: 100%;
+    min-width: 0;
+  }
+
+  .monitor-log-row {
+    grid-template-columns: minmax(0, 1fr) auto;
+    gap: 5px 10px;
+  }
+
+  .monitor-log-row pre {
+    grid-column: 1 / -1;
+  }
+}

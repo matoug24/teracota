@@ -1,6 +1,7 @@
 let state = { authenticated: false, systems: [], tasks: [], locations: [], deleted_items: [], theme: "standard", timeline_months: 12 };
 let visitorLogData = null;
 let activeView = "systems";
+let activeAdminTab = "monitoring";
 let dialogMode = null;
 let editingItem = null;
 let dashboardRangeMonths = 12;
@@ -749,6 +750,24 @@ function renderAdminPage() {
       <div><p class="eyebrow">Restricted tools</p><h2>Administration</h2></div>
     </div>
 
+    <nav class="admin-tabs" aria-label="Administration sections" role="tablist">
+      ${[
+        ["monitoring", "Monitoring"],
+        ["locations", "Locations"],
+        ["systems", "Systems"],
+        ["settings", "Settings"],
+        ["recovery", "Recovery"],
+      ].map(([id, label]) => `
+        <button class="admin-tab ${activeAdminTab === id ? "active" : ""}" type="button"
+          role="tab" data-admin-tab="${id}" aria-selected="${activeAdminTab === id}">${label}</button>
+      `).join("")}
+    </nav>
+
+    <div class="admin-tab-panel" data-admin-panel="monitoring" ${activeAdminTab === "monitoring" ? "" : "hidden"}>
+    <section class="admin-section" id="serverMonitoringSection"></section>
+    </div>
+
+    <div class="admin-tab-panel" data-admin-panel="settings" ${activeAdminTab === "settings" ? "" : "hidden"}>
     <section class="admin-section">
       <header><div><p class="eyebrow">Application appearance</p><h3>Interface Style</h3></div><span class="tag">${themeOptions.length} styles</span></header>
       <div class="theme-grid">
@@ -768,7 +787,9 @@ function renderAdminPage() {
       </label>
       <p class="muted admin-help">This is the initial period and the range restored by Reset on dashboard, location, and system timelines. Timeline zoom changes the period by three months per click.</p>
     </section>
+    </div>
 
+    <div class="admin-tab-panel" data-admin-panel="recovery" ${activeAdminTab === "recovery" ? "" : "hidden"}>
     <section class="admin-section">
       <header><div><p class="eyebrow">Portable backup</p><h3>Data Export and Restore</h3></div><span class="tag">CSV</span></header>
       <div class="admin-data-actions">
@@ -778,7 +799,9 @@ function renderAdminPage() {
       </div>
       <p class="muted admin-help">The backup includes systems, visits, issues, development items, settings, and deleted records. Visitor logs are never exported or replaced.</p>
     </section>
+    </div>
 
+    <div class="admin-tab-panel" data-admin-panel="locations" ${activeAdminTab === "locations" ? "" : "hidden"}>
     <section class="admin-section">
       <header><div><p class="eyebrow">Dashboard sequence</p><h3>Location Display Order</h3></div><span class="tag">${rankedLocations.length} locations</span></header>
       <div class="admin-location-list">
@@ -799,6 +822,12 @@ function renderAdminPage() {
       <p class="muted admin-help">The first location in this list appears first on the Systems dashboard.</p>
     </section>
 
+    <section class="admin-section" id="notificationAdminSection"></section>
+
+    <section class="admin-section" id="measurementAdminSection"></section>
+    </div>
+
+    <div class="admin-tab-panel" data-admin-panel="systems" ${activeAdminTab === "systems" ? "" : "hidden"}>
     <section class="admin-section">
       <header><div><p class="eyebrow">Fleet records</p><h3>System Management</h3></div><span class="tag">${state.systems.length} systems</span></header>
       <div class="admin-system-list">
@@ -814,9 +843,9 @@ function renderAdminPage() {
         `).join("")}
       </div>
     </section>
+    </div>
 
-    <section class="admin-section" id="measurementAdminSection"></section>
-
+    <div class="admin-tab-panel" data-admin-panel="recovery" ${activeAdminTab === "recovery" ? "" : "hidden"}>
     <section class="admin-section">
       <header><div><p class="eyebrow">Recovery area</p><h3>Deleted Records</h3></div><span class="tag">${state.deleted_items.length}</span></header>
       <div class="deleted-record-list">
@@ -825,8 +854,22 @@ function renderAdminPage() {
         `}
       </div>
     </section>
+    </div>
   `;
 
+  adminPage.querySelectorAll("[data-admin-tab]").forEach((button) => {
+    button.addEventListener("click", () => {
+      activeAdminTab = button.dataset.adminTab;
+      adminPage.querySelectorAll("[data-admin-tab]").forEach((tab) => {
+        const selected = tab.dataset.adminTab === activeAdminTab;
+        tab.classList.toggle("active", selected);
+        tab.setAttribute("aria-selected", String(selected));
+      });
+      adminPage.querySelectorAll("[data-admin-panel]").forEach((panel) => {
+        panel.hidden = panel.dataset.adminPanel !== activeAdminTab;
+      });
+    });
+  });
   adminPage.querySelectorAll("[data-theme]").forEach((button) => {
     button.addEventListener("click", () => sendJson("/api/settings/theme", {
       method: "PUT",
@@ -870,6 +913,8 @@ function renderAdminPage() {
     button.addEventListener("click", () => permanentlyDeleteItem(Number(button.dataset.adminPurge)));
   });
   window.MeasurementAdmin?.render(adminPage);
+  window.AdminMonitor?.mount(adminPage);
+  window.NotificationAdmin?.mount(adminPage);
 }
 
 async function moveLocation(index, direction) {

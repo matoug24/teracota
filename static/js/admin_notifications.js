@@ -22,6 +22,20 @@
     return payload;
   }
 
+  function recipientRow(subscription = {}) {
+    return `
+      <div class="notification-recipient-row" data-recipient-row>
+        <label class="notification-email-field">
+          <span>Email address</span>
+          <input type="email" data-recipient-email value="${escapeHtml(subscription.email || "")}" placeholder="name@example.com" />
+        </label>
+        <label class="notification-choice"><input data-recipient-updates type="checkbox" ${subscription.update_notifications ? "checked" : ""} /> Operational updates</label>
+        <label class="notification-choice"><input data-recipient-daily type="checkbox" ${subscription.daily_summary ? "checked" : ""} /> Daily 5 AM summary</label>
+        <button class="icon-button notification-remove" data-remove-recipient type="button" title="Remove recipient" aria-label="Remove recipient">&times;</button>
+      </div>
+    `;
+  }
+
   function render(root, payload) {
     const smtp = payload.smtp || {};
     const outbox = payload.outbox || {};
@@ -44,16 +58,15 @@
               <strong>${escapeHtml(setting.location)}</strong>
               <span class="notification-save-state" aria-live="polite"></span>
             </div>
-            <label class="notification-recipients">
-              <span>Team email addresses</span>
-              <textarea name="recipients" rows="2" placeholder="name@example.com, teammate@example.com">${escapeHtml((setting.recipients || []).join("\n"))}</textarea>
-            </label>
-            <fieldset class="notification-options">
-              <legend>Send this team</legend>
-              <label><input name="update_notifications" type="checkbox" ${setting.update_notifications ? "checked" : ""} /> Operational updates</label>
-              <label><input name="daily_summary" type="checkbox" ${setting.daily_summary ? "checked" : ""} /> Daily 5 AM summary</label>
-            </fieldset>
-            <button class="primary-button notification-save" type="submit">Save</button>
+            <div class="notification-recipient-list">
+              ${(setting.recipients || []).length
+                ? setting.recipients.map(recipientRow).join("")
+                : recipientRow()}
+            </div>
+            <div class="notification-form-actions">
+              <button class="secondary-button" data-add-recipient type="button">+ Add recipient</button>
+              <button class="primary-button notification-save" type="submit">Save location</button>
+            </div>
           </form>
         `).join("") : '<div class="admin-empty-state"><strong>No locations</strong><span>Add a system before configuring a notification team.</span></div>'}
       </div>
@@ -61,6 +74,25 @@
     `;
 
     root.querySelectorAll("[data-notification-location]").forEach((form) => {
+      form.addEventListener("click", (event) => {
+        const addButton = event.target.closest("[data-add-recipient]");
+        if (addButton) {
+          form.querySelector(".notification-recipient-list").insertAdjacentHTML("beforeend", recipientRow());
+          form.querySelector("[data-recipient-row]:last-child [data-recipient-email]")?.focus();
+          return;
+        }
+        const removeButton = event.target.closest("[data-remove-recipient]");
+        if (!removeButton) return;
+        const rows = form.querySelectorAll("[data-recipient-row]");
+        if (rows.length === 1) {
+          const row = rows[0];
+          row.querySelector("[data-recipient-email]").value = "";
+          row.querySelector("[data-recipient-updates]").checked = false;
+          row.querySelector("[data-recipient-daily]").checked = false;
+          return;
+        }
+        removeButton.closest("[data-recipient-row]").remove();
+      });
       form.addEventListener("submit", async (event) => {
         event.preventDefault();
         const location = form.dataset.notificationLocation;
@@ -73,9 +105,11 @@
           const updated = await requestJson(`/api/admin/notification-settings/${encodeURIComponent(location)}`, {
             method: "PUT",
             body: JSON.stringify({
-              recipients: form.elements.recipients.value,
-              update_notifications: form.elements.update_notifications.checked,
-              daily_summary: form.elements.daily_summary.checked,
+              recipients: [...form.querySelectorAll("[data-recipient-row]")].map((row) => ({
+                email: row.querySelector("[data-recipient-email]").value.trim(),
+                update_notifications: row.querySelector("[data-recipient-updates]").checked,
+                daily_summary: row.querySelector("[data-recipient-daily]").checked,
+              })).filter((item) => item.email),
             }),
           });
           render(root, updated);

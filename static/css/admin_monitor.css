@@ -94,7 +94,8 @@
   border-bottom: 1px solid var(--line);
 }
 
-.monitor-operation-grid > div {
+.monitor-operation-grid > div,
+.monitor-operation-button {
   display: grid;
   min-width: 0;
   gap: 4px;
@@ -102,13 +103,130 @@
   border-right: 1px solid var(--line);
 }
 
-.monitor-operation-grid > div:last-child {
+.monitor-operation-grid > :last-child {
   border-right: 0;
+}
+
+.monitor-operation-button {
+  width: 100%;
+  border-top: 0;
+  border-bottom: 0;
+  border-left: 0;
+  background: transparent;
+  color: var(--text);
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+
+.monitor-operation-button:not(:disabled):hover {
+  background: var(--surface-alt);
+}
+
+.monitor-operation-button:disabled {
+  cursor: default;
 }
 
 .monitor-operation-grid strong {
   overflow-wrap: anywhere;
   font-size: 0.88rem;
+}
+
+.monitor-failure-panel {
+  padding: 18px;
+  border: 1px solid color-mix(in srgb, var(--red) 35%, var(--line));
+  border-top: 0;
+  background: color-mix(in srgb, var(--red) 4%, var(--surface));
+}
+
+.monitor-failure-heading,
+.monitor-failure-summary {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+}
+
+.monitor-failure-heading h4 {
+  margin: 3px 0 0;
+}
+
+.monitor-failure-list {
+  display: grid;
+  gap: 10px;
+  margin-top: 14px;
+}
+
+.monitor-failure-item {
+  padding: 14px;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  background: var(--surface);
+}
+
+.monitor-failure-summary > div {
+  display: grid;
+  gap: 3px;
+}
+
+.monitor-failure-summary span,
+.monitor-failed-file span {
+  color: var(--muted);
+  font-size: 0.76rem;
+}
+
+.monitor-failure-meta {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 8px;
+  margin: 12px 0;
+}
+
+.monitor-failure-meta div {
+  min-width: 0;
+}
+
+.monitor-failure-meta dt {
+  color: var(--muted);
+  font-size: 0.68rem;
+  font-weight: 800;
+  text-transform: uppercase;
+}
+
+.monitor-failure-meta dd {
+  margin: 4px 0 0;
+  overflow-wrap: anywhere;
+  font-size: 0.8rem;
+}
+
+.monitor-failure-item details {
+  border-top: 1px solid var(--line);
+  padding-top: 10px;
+}
+
+.monitor-failure-item summary {
+  color: var(--blue);
+  font-size: 0.8rem;
+  font-weight: 800;
+  cursor: pointer;
+}
+
+.monitor-failure-item details > pre {
+  max-height: 180px;
+  overflow: auto;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  color: var(--text);
+  font-size: 0.74rem;
+}
+
+.monitor-failed-file {
+  display: grid;
+  gap: 3px;
+  padding: 8px 0;
+  border-top: 1px solid var(--line);
+  overflow-wrap: anywhere;
+  font-size: 0.78rem;
 }
 
 .monitor-log-heading {
@@ -203,6 +321,10 @@
     border-right: 0;
   }
 
+  .monitor-failure-meta {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
   .monitor-operation-grid > div:nth-child(-n+2) {
     border-bottom: 1px solid var(--line);
   }
@@ -214,13 +336,24 @@
     grid-template-columns: 1fr;
   }
 
-  .monitor-operation-grid > div {
+  .monitor-operation-grid > div,
+  .monitor-operation-button {
     border-right: 0;
     border-bottom: 1px solid var(--line);
   }
 
-  .monitor-operation-grid > div:last-child {
+  .monitor-operation-grid > :last-child {
     border-bottom: 0;
+  }
+
+  .monitor-failure-heading,
+  .monitor-failure-summary {
+    align-items: stretch;
+    flex-direction: column;
+  }
+
+  .monitor-failure-meta {
+    grid-template-columns: 1fr;
   }
 
   .monitor-log-heading,

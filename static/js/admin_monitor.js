@@ -2,6 +2,7 @@
   const monitorState = {
     timer: null,
     section: null,
+    logSection: null,
     level: "ALL",
     limit: 200,
   };
@@ -58,8 +59,12 @@
     return value ? formatDateTime(value) : "Unknown time";
   }
 
-  async function fetchJson(url) {
-    const response = await fetch(url, { cache: "no-store", headers: { Accept: "application/json" } });
+  async function fetchJson(url, options = {}) {
+    const response = await fetch(url, {
+      cache: "no-store",
+      ...options,
+      headers: { Accept: "application/json", ...(options.headers || {}) },
+    });
     const payload = await response.json().catch(() => ({}));
     if (response.status === 401) {
       window.location.href = `/login?next=${encodeURIComponent(window.location.pathname)}`;
@@ -114,9 +119,13 @@
         <div><span>Databases</span><strong>${formatBytes(databaseBytes)}</strong></div>
         <div><span>Imported CSV data</span><strong>${formatBytes(measurement.imported_bytes)}</strong><small>${Number(measurement.imported_files || 0).toLocaleString()} files</small></div>
         <div><span>Last measurement import</span><strong>${escapeHtml(formatDateTime(measurement.last_imported_at))}</strong></div>
-        <div class="${failed ? "monitor-operation-alert" : ""}"><span>Upload batches</span><strong>${pending} pending / ${failed} failed</strong></div>
+        <button class="monitor-operation-button ${failed ? "monitor-operation-alert" : ""}" type="button" id="openImportFailures" ${failed ? "" : "disabled"}>
+          <span>Upload batches</span><strong>${pending} pending / ${failed} failed</strong><small>${failed ? "View failed imports" : "No failed imports"}</small>
+        </button>
       </div>
+      <section class="monitor-failure-panel" id="failedImportPanel" hidden></section>
     `;
+    target.querySelector("#openImportFailures")?.addEventListener("click", loadFailures);
     const status = monitorState.section.querySelector("#serverMonitorStatus");
     if (status) {
       status.textContent = `Updated ${formatDateTime(health.generated_at)}`;
@@ -125,7 +134,7 @@
   }
 
   function renderLogs(payload) {
-    const target = monitorState.section?.querySelector("#applicationLogRows");
+    const target = monitorState.logSection?.querySelector("#applicationLogRows");
     if (!target) return;
     const entries = [...(payload.entries || [])].reverse();
     target.innerHTML = entries.length ? entries.map((entry) => {
@@ -139,6 +148,74 @@
         </article>
       `;
     }).join("") : '<p class="monitor-empty">No matching application log entries.</p>';
+  }
+
+  function renderFailures(payload) {
+    const panel = monitorState.section?.querySelector("#failedImportPanel");
+    if (!panel) return;
+    const batches = payload.batches || [];
+    panel.hidden = false;
+    panel.innerHTML = `
+      <div class="monitor-failure-heading">
+        <div><p class="eyebrow">Measurement importer</p><h4>Failed Import Batches</h4></div>
+        <button class="icon-button" type="button" data-close-import-failures title="Close" aria-label="Close failed imports">&times;</button>
+      </div>
+      <div class="monitor-failure-list">
+        ${batches.length ? batches.map((batch) => `
+          <article class="monitor-failure-item">
+            <div class="monitor-failure-summary">
+              <div>
+                <strong>${escapeHtml(batch.client || "Unknown location")}</strong>
+                <span>${escapeHtml(formatDateTime(batch.created_at))} &middot; ${Number(batch.failed_file_count || 0)} failed file${Number(batch.failed_file_count || 0) === 1 ? "" : "s"}</span>
+              </div>
+              <button class="secondary-button" type="button" data-retry-import="${escapeHtml(batch.id)}">Retry at next import</button>
+            </div>
+            <dl class="monitor-failure-meta">
+              <div><dt>Batch</dt><dd><code>${escapeHtml(batch.id)}</code></dd></div>
+              <div><dt>Source</dt><dd>${escapeHtml(batch.source_id || "Unknown")}</dd></div>
+              <div><dt>Attempts</dt><dd>${Number(batch.import_attempts || 0)}</dd></div>
+              <div><dt>Expected files</dt><dd>${Number(batch.expected_files || 0)}</dd></div>
+            </dl>
+            <details>
+              <summary>Failure details</summary>
+              <pre>${escapeHtml(batch.error || "No batch error was recorded.")}</pre>
+              ${(batch.failed_files || []).map((item) => `
+                <div class="monitor-failed-file"><strong>${escapeHtml(item.filename)}</strong><span>${escapeHtml(item.error || "No error recorded")}</span></div>
+              `).join("")}
+              ${Number(batch.failed_file_count || 0) > (batch.failed_files || []).length ? `<p class="muted">Showing the first ${(batch.failed_files || []).length} failed files.</p>` : ""}
+            </details>
+          </article>
+        `).join("") : '<p class="monitor-empty">No failed measurement imports remain.</p>'}
+      </div>
+    `;
+    panel.querySelector("[data-close-import-failures]")?.addEventListener("click", () => { panel.hidden = true; });
+    panel.querySelectorAll("[data-retry-import]").forEach((button) => {
+      button.addEventListener("click", async () => {
+        button.disabled = true;
+        button.textContent = "Queuing...";
+        try {
+          await fetchJson(`/api/admin/measurement-import-failures/${encodeURIComponent(button.dataset.retryImport)}/retry`, { method: "POST" });
+          await loadHealth();
+          await loadFailures();
+        } catch (error) {
+          button.disabled = false;
+          button.textContent = error.message || "Retry failed";
+        }
+      });
+    });
+  }
+
+  async function loadFailures() {
+    const panel = monitorState.section?.querySelector("#failedImportPanel");
+    if (panel) {
+      panel.hidden = false;
+      panel.innerHTML = '<p class="monitor-loading">Loading failed imports...</p>';
+    }
+    try {
+      renderFailures(await fetchJson("/api/admin/measurement-import-failures"));
+    } catch (error) {
+      if (panel) panel.innerHTML = `<p class="monitor-empty">${escapeHtml(error.message)}</p>`;
+    }
   }
 
   async function loadHealth() {
@@ -156,7 +233,7 @@
     const status = monitorState.section?.querySelector("#serverMonitorStatus");
     if (status) status.textContent = "Refreshing";
     try {
-      await Promise.all([loadHealth(), loadLogs()]);
+      await loadHealth();
     } catch (error) {
       if (status) {
         status.textContent = error.message || "Unable to load monitoring data";
@@ -171,50 +248,59 @@
     if (!monitorState.section) return;
     monitorState.section.innerHTML = `
       <header>
-        <div><p class="eyebrow">Read-only diagnostics</p><h3>Server Health and Application Log</h3></div>
+        <div><p class="eyebrow">Diagnostics</p><h3>Server Health</h3></div>
         <div class="monitor-header-actions">
           <span class="tag" id="serverMonitorStatus">Loading</span>
           <button class="icon-button" id="refreshServerMonitor" type="button" title="Refresh" aria-label="Refresh server monitoring">&#8635;</button>
         </div>
       </header>
       <div id="serverHealthContent" aria-live="polite"><p class="monitor-loading">Loading server health...</p></div>
+    `;
+    monitorState.section.querySelector("#refreshServerMonitor")?.addEventListener("click", refreshAll);
+    refreshAll();
+    monitorState.timer = window.setTimeout(function refreshMonitor() {
+      if (!monitorState.section?.isConnected) return;
+      refreshAll();
+      monitorState.timer = window.setTimeout(refreshMonitor, 60000);
+    }, 60000);
+  }
+
+  function mountLogs(page) {
+    monitorState.logSection = page.querySelector("#applicationLogsSection");
+    if (!monitorState.logSection) return;
+    monitorState.logSection.innerHTML = `
       <div class="monitor-log-heading">
-        <div><p class="eyebrow">Recent authenticated activity</p><h4>Application Log</h4></div>
+        <div><p class="eyebrow">Flask runtime</p><h4>Application Log</h4></div>
         <div class="monitor-log-controls">
           <label>Level
             <select id="monitorLogLevel">
-              <option value="ALL">All</option>
-              <option value="ERROR">Error</option>
-              <option value="WARNING">Warning</option>
-              <option value="INFO">Information</option>
+              <option value="ALL" ${monitorState.level === "ALL" ? "selected" : ""}>All</option>
+              <option value="ERROR" ${monitorState.level === "ERROR" ? "selected" : ""}>Error</option>
+              <option value="WARNING" ${monitorState.level === "WARNING" ? "selected" : ""}>Warning</option>
+              <option value="INFO" ${monitorState.level === "INFO" ? "selected" : ""}>Information</option>
             </select>
           </label>
           <label>Entries
             <select id="monitorLogLimit">
-              <option value="100">100</option>
-              <option value="200" selected>200</option>
-              <option value="500">500</option>
+              <option value="100" ${monitorState.limit === 100 ? "selected" : ""}>100</option>
+              <option value="200" ${monitorState.limit === 200 ? "selected" : ""}>200</option>
+              <option value="500" ${monitorState.limit === 500 ? "selected" : ""}>500</option>
             </select>
           </label>
         </div>
       </div>
       <div class="monitor-log-list" id="applicationLogRows" aria-live="polite"><p class="monitor-loading">Loading application log...</p></div>
     `;
-    monitorState.section.querySelector("#refreshServerMonitor")?.addEventListener("click", refreshAll);
-    monitorState.section.querySelector("#monitorLogLevel")?.addEventListener("change", async (event) => {
+    monitorState.logSection.querySelector("#monitorLogLevel")?.addEventListener("change", async (event) => {
       monitorState.level = event.target.value;
       await loadLogs();
     });
-    monitorState.section.querySelector("#monitorLogLimit")?.addEventListener("change", async (event) => {
+    monitorState.logSection.querySelector("#monitorLogLimit")?.addEventListener("change", async (event) => {
       monitorState.limit = Number(event.target.value);
       await loadLogs();
     });
-    refreshAll();
-    monitorState.timer = window.setTimeout(function refreshMonitor() {
-      if (monitorState.section?.isConnected) refreshAll();
-      monitorState.timer = window.setTimeout(refreshMonitor, 60000);
-    }, 60000);
+    loadLogs();
   }
 
-  window.AdminMonitor = { mount };
+  window.AdminMonitor = { mount, mountLogs };
 })();

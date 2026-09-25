@@ -35,7 +35,7 @@ os.environ.update(
 import app as app_module  # noqa: E402
 from email_notifications import deliver_pending, queue_daily_summaries  # noqa: E402
 from measurements.config import save_source_mapping, source_mappings  # noqa: E402
-from measurements.database import ANALYTICS_DB, connect, replace_job_summary  # noqa: E402
+from measurements.database import ANALYTICS_DB, UPLOAD_DB, connect, replace_job_summary  # noqa: E402
 from measurements.queries import options  # noqa: E402
 from measurements.settings import OBJECT_CACHE_DIR  # noqa: E402
 from measurements.storage import sha256_path  # noqa: E402
@@ -131,7 +131,7 @@ class MeasurementIntegrationTests(unittest.TestCase):
         self.assertEqual(anonymous_files.status_code, 302)
         self.assertIn("/login", anonymous_files.headers["Location"])
 
-    def test_admin_monitoring_is_read_only_and_authenticated(self):
+    def test_admin_monitoring_failures_and_authentication(self):
         health = self.client.get("/api/admin/server-health")
         self.assertEqual(health.status_code, 200)
         payload = health.get_json()
@@ -140,6 +140,40 @@ class MeasurementIntegrationTests(unittest.TestCase):
         self.assertIn("free_bytes", payload["disk"]["root"])
         self.assertIn("operations_database_bytes", payload["storage"])
         self.assertIn("pending_batches", payload["measurements"])
+
+        with connect(UPLOAD_DB) as connection:
+            connection.execute(
+                """
+                INSERT INTO upload_batches(
+                    id,source_id,client,status,expected_files,created_at,import_attempts,error
+                ) VALUES('failed-test-batch','test-source','Client Plant','IMPORT_FAILED',1,
+                         '2026-09-25T04:00:00+00:00',1,'Unable to parse test CSV')
+                """
+            )
+            connection.execute(
+                """
+                INSERT INTO upload_items(
+                    id,batch_id,filename,object_key,size_bytes,sha256,status,error
+                ) VALUES('failed-test-item','failed-test-batch','bad.csv','incoming/bad.csv',10,
+                         'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa',
+                         'IMPORT_FAILED','Missing required column')
+                """
+            )
+        failures = self.client.get("/api/admin/measurement-import-failures")
+        self.assertEqual(failures.status_code, 200)
+        failed_batch = failures.get_json()["batches"][0]
+        self.assertEqual(failed_batch["id"], "failed-test-batch")
+        self.assertEqual(failed_batch["failed_files"][0]["filename"], "bad.csv")
+        retry = self.client.post(
+            "/api/admin/measurement-import-failures/failed-test-batch/retry"
+        )
+        self.assertEqual(retry.status_code, 200)
+        with connect(UPLOAD_DB) as connection:
+            status = connection.execute(
+                "SELECT status FROM upload_batches WHERE id='failed-test-batch'"
+            ).fetchone()["status"]
+            self.assertEqual(status, "VERIFIED")
+            connection.execute("DELETE FROM upload_batches WHERE id='failed-test-batch'")
 
         self.client.get("/admin")
         logs = self.client.get("/api/admin/application-logs?level=ALL&limit=9999")
@@ -160,6 +194,10 @@ class MeasurementIntegrationTests(unittest.TestCase):
         anonymous = app_module.app.test_client()
         before = len(self.client.get("/api/admin/application-logs?limit=500").get_json()["entries"])
         self.assertEqual(anonymous.get("/api/admin/server-health").status_code, 401)
+        self.assertEqual(
+            anonymous.get("/api/admin/measurement-import-failures").status_code,
+            401,
+        )
         self.assertEqual(anonymous.get("/login").status_code, 200)
         after = self.client.get("/api/admin/application-logs?limit=500").get_json()
         self.assertEqual(len(after["entries"]), before)
@@ -171,19 +209,65 @@ class MeasurementIntegrationTests(unittest.TestCase):
             401,
         )
 
+        app_module.execute(
+            """
+            INSERT INTO notification_settings(
+                location,recipients,update_notifications,daily_summary,updated_at
+            ) VALUES('Client Plant','[\"legacy@example.com\"]',1,0,'2026-09-25T00:00:00Z')
+            """
+        )
+        legacy = self.client.get("/api/admin/notification-settings").get_json()["locations"][0]
+        self.assertEqual(
+            legacy["recipients"],
+            [{"email": "legacy@example.com", "update_notifications": True, "daily_summary": False}],
+        )
+
         saved = self.client.put(
             "/api/admin/notification-settings/Client%20Plant",
             json={
-                "recipients": "team@example.com\nsecond@example.com",
-                "update_notifications": True,
-                "daily_summary": True,
+                "recipients": [
+                    {
+                        "email": "team@example.com",
+                        "update_notifications": True,
+                        "daily_summary": False,
+                    },
+                    {
+                        "email": "second@example.com",
+                        "update_notifications": False,
+                        "daily_summary": True,
+                    },
+                ],
             },
         )
         self.assertEqual(saved.status_code, 200)
         setting = saved.get_json()["locations"][0]
-        self.assertEqual(setting["recipients"], ["team@example.com", "second@example.com"])
+        self.assertEqual(
+            setting["recipients"],
+            [
+                {
+                    "email": "team@example.com",
+                    "update_notifications": True,
+                    "daily_summary": False,
+                },
+                {
+                    "email": "second@example.com",
+                    "update_notifications": False,
+                    "daily_summary": True,
+                },
+            ],
+        )
         self.assertTrue(setting["update_notifications"])
         self.assertTrue(setting["daily_summary"])
+
+        app_module.execute(
+            "INSERT INTO locations(name,contacts,notes,display_rank) VALUES('No Systems','','',99)"
+        )
+        listed_locations = {
+            item["location"]
+            for item in self.client.get("/api/admin/notification-settings").get_json()["locations"]
+        }
+        self.assertNotIn("No Systems", listed_locations)
+        app_module.execute("DELETE FROM locations WHERE name='No Systems'")
 
         systems = app_module.query_all("SELECT id,name FROM systems ORDER BY id")
         robot_one = next(system for system in systems if system["name"] == "Robot 1")
@@ -236,7 +320,12 @@ class MeasurementIntegrationTests(unittest.TestCase):
             sent, failed = deliver_pending(MAIN_DB)
         self.assertEqual((sent, failed), (2, 0))
         self.assertEqual(len(sent_messages), 2)
-        self.assertTrue(all(message["To"] == "team@example.com, second@example.com" for message in sent_messages))
+        recipients_by_subject = {
+            "daily" if "Daily summary" in message["Subject"] else "update": message["To"]
+            for message in sent_messages
+        }
+        self.assertEqual(recipients_by_subject["update"], "team@example.com")
+        self.assertEqual(recipients_by_subject["daily"], "second@example.com")
         statuses = app_module.query_all("SELECT DISTINCT status FROM email_outbox")
         self.assertEqual(statuses, [{"status": "SENT"}])
 

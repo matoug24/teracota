@@ -1,4 +1,4 @@
-"""Read-only server health and bounded application-log access for administrators."""
+"""Server health, failed-import diagnostics, and bounded application-log access."""
 
 from __future__ import annotations
 
@@ -15,7 +15,7 @@ import socket
 import sqlite3
 import time
 
-from flask import Blueprint, current_app, g, jsonify, request, session
+from flask import Blueprint, abort, current_app, g, jsonify, request, session
 
 from measurements.settings import ANALYTICS_DB, DATA_DIR, UPLOAD_DB
 
@@ -180,6 +180,81 @@ def _measurement_status() -> dict:
         "pending_batches": int(batches["pending"] or 0) if batches else 0,
         "failed_batches": int(batches["failed"] or 0) if batches else 0,
     }
+
+
+def _failed_measurement_batches(limit: int = 100) -> list[dict]:
+    if not UPLOAD_DB.is_file():
+        return []
+    connection = sqlite3.connect(str(UPLOAD_DB), timeout=5)
+    connection.row_factory = sqlite3.Row
+    try:
+        batches = connection.execute(
+            """
+            SELECT id,source_id,client,expected_files,created_at,completed_at,
+                   import_attempts,error
+            FROM upload_batches
+            WHERE status='IMPORT_FAILED'
+            ORDER BY created_at DESC
+            LIMIT ?
+            """,
+            (limit,),
+        ).fetchall()
+        results = []
+        for batch in batches:
+            failed_items = connection.execute(
+                """
+                SELECT filename,error FROM upload_items
+                WHERE batch_id=? AND status='IMPORT_FAILED'
+                ORDER BY filename LIMIT 50
+                """,
+                (batch["id"],),
+            ).fetchall()
+            item_count = connection.execute(
+                "SELECT COUNT(*) AS total FROM upload_items WHERE batch_id=? AND status='IMPORT_FAILED'",
+                (batch["id"],),
+            ).fetchone()["total"]
+            result = dict(batch)
+            result["error"] = str(result.get("error") or "")[:12000]
+            result["failed_file_count"] = int(item_count or 0)
+            result["failed_files"] = [
+                {
+                    "filename": row["filename"],
+                    "error": str(row["error"] or "")[:2000],
+                }
+                for row in failed_items
+            ]
+            results.append(result)
+        return results
+    finally:
+        connection.close()
+
+
+def _queue_failed_batch_retry(batch_id: str) -> bool:
+    if not UPLOAD_DB.is_file():
+        return False
+    connection = sqlite3.connect(str(UPLOAD_DB), timeout=10)
+    try:
+        connection.execute("BEGIN IMMEDIATE")
+        cursor = connection.execute(
+            """
+            UPDATE upload_batches
+            SET status='VERIFIED',import_started_at=NULL,imported_at=NULL,error=NULL
+            WHERE id=? AND status='IMPORT_FAILED'
+            """,
+            (batch_id,),
+        )
+        if cursor.rowcount:
+            connection.execute(
+                """
+                UPDATE upload_items SET status='VERIFIED',error=NULL
+                WHERE batch_id=? AND status='IMPORT_FAILED'
+                """,
+                (batch_id,),
+            )
+        connection.commit()
+        return bool(cursor.rowcount)
+    finally:
+        connection.close()
 
 
 class JsonLineFormatter(logging.Formatter):
@@ -352,6 +427,17 @@ def create_monitoring_blueprint(database_path: str | Path) -> Blueprint:
             }
         )
 
+    @blueprint.get("/api/admin/measurement-import-failures")
+    def measurement_import_failures():
+        return jsonify({"batches": _failed_measurement_batches()})
+
+    @blueprint.post("/api/admin/measurement-import-failures/<batch_id>/retry")
+    def retry_measurement_import(batch_id: str):
+        if not _queue_failed_batch_retry(batch_id):
+            abort(404)
+        current_app.logger.info("Measurement import batch %s queued for retry", batch_id)
+        return jsonify({"queued": True, "batch_id": batch_id})
+
     return blueprint
 
 
@@ -370,6 +456,7 @@ def register_request_logging(app) -> None:
             or request.path in {
                 "/api/admin/server-health",
                 "/api/admin/application-logs",
+                "/api/admin/measurement-import-failures",
             }
         ):
             return response

@@ -369,7 +369,7 @@ TERACOTA_SMTP_FROM="YOUR_GOOGLE_EMAIL_ADDRESS"
 | `TERACOTA_MEASUREMENT_STORAGE_BACKEND` | Uses protected Lightsail disk storage (`filesystem`) or a private S3 bucket (`s3`). |
 | `TERACOTA_MEASUREMENT_MAX_UPLOAD_BYTES` | Maximum size of one uploaded CSV file. |
 | `TERACOTA_MEASUREMENT_MAX_ARCHIVE_BYTES` | Maximum combined source-file size allowed in one monthly ZIP download. The default is 2 GiB. |
-| `TERACOTA_APP_LOG_PATH` | Rotating JSON application log displayed in the read-only admin monitoring panel. |
+| `TERACOTA_APP_LOG_PATH` | Rotating JSON application log displayed under the `/logs` Application Log tab. |
 | `TERACOTA_APP_LOG_MAX_BYTES` | Size of each application log file before rotation. The example uses 5 MiB. |
 | `TERACOTA_APP_LOG_BACKUPS` | Number of rotated application log files retained. The example keeps five. |
 | `TERACOTA_SMTP_HOST`, `TERACOTA_SMTP_PORT`, `TERACOTA_SMTP_SECURITY` | Gmail SMTP connection settings. The supplied values use encrypted SMTP over port 465. |
@@ -481,9 +481,13 @@ the app password before authentication.
 After TeraCota starts, open `/admin`, select **Locations**, and configure each
 location independently:
 
-1. Enter one or more team addresses, separated by commas or new lines.
-2. Select **Operational updates**, **Daily 5 AM summary**, or both.
+1. Add each team address as its own recipient row.
+2. For each address, select **Operational updates**, **Daily 5 AM summary**, or both.
 3. Save that location.
+
+Only locations with at least one current system appear in this list. Existing
+location-wide recipient settings from older versions are converted to the same
+choices on each saved email address automatically.
 
 Operational changes are committed to SQLite first and placed in a durable
 outbox. The dispatcher checks that outbox every minute. Delivery failure does
@@ -599,7 +603,7 @@ Verify in a browser:
 3. Login works with the `.env` credentials.
 4. The Systems dashboard loads.
 5. `/admin`, `/statistics`, `/issues`, and `/logs` load after login.
-   In `/admin`, confirm Server Health loads and Application Log contains the authenticated page request.
+   In `/admin`, confirm Server Health loads. Open `/logs`, select **Application Log**, and confirm it contains the authenticated page request.
 6. Static assets under `/assets/css`, `/assets/js`, and
    `/assets/measurements` load without HTTP 404 errors.
 7. Add a temporary system, issue, and visit and test editing.
@@ -1117,10 +1121,14 @@ sudo tail -f /var/log/nginx/access.log
 sudo tail -f /var/lib/teracota/logs/teracota.log
 ```
 
-The admin monitoring panel reads only the bounded TeraCota application log and
-local system counters. It cannot run shell commands, restart services, or read
-the wider system journal. The `/logs` route remains the separate authenticated
-visitor record.
+The admin Monitoring tab reads local system counters and measurement import
+state. Click a nonzero failed-batch count to inspect batch and file errors.
+**Retry at next import** returns that batch to the verified queue; it does not
+run a large import inside the Gunicorn request. The 4:00 AM importer processes
+it, or an administrator can start `teracota-measurement-import.service`
+manually. The panel cannot run shell commands, restart services, or read the
+wider system journal. The `/logs` route keeps visitor records and the bounded
+rotating Flask application log in separate tabs.
 
 ## 20. If the GitHub repository becomes private
 

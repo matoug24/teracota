@@ -18,7 +18,8 @@ be accessed.
 - Development ideas and tasks
 - Deleted issue and visit recovery from the admin page
 - Visitor logs for authenticated sessions
-- Read-only server health and rotating application logs in the admin page
+- Server health with failed measurement-import details and retry queuing in the admin page
+- Visitor records and the rotating Flask application log under separate `/logs` tabs
 - Per-location update emails and 5:00 AM previous-day operations summaries
 - Operational statistics
 - Measurement summaries imported from production CSV files
@@ -29,7 +30,7 @@ be accessed.
 | Path | Purpose |
 | --- | --- |
 | `app.py` | Main Flask application, operations APIs, authentication, and schema initialization |
-| `server_monitoring.py` | Read-only server metrics, rotating application logging, and monitoring APIs |
+| `server_monitoring.py` | Server metrics, failed-import diagnostics, retry queuing, rotating logs, and monitoring APIs |
 | `email_notifications.py` | Durable email outbox, Gmail SMTP delivery, daily summaries, and admin APIs |
 | `wsgi.py` | Gunicorn production entry point; initializes the databases before serving |
 | `templates/` | Main application and login templates |
@@ -157,15 +158,16 @@ real uploader configuration are excluded by `.gitignore`.
 | `/measurements/files/<name>` | Authenticated raw CSV browser and monthly ZIP downloads for one location |
 | `/admin` | System administration, ordering, recovery, export, and measurement configuration |
 | `/statistics` | Operational statistics |
-| `/logs` | Authenticated visitor records |
+| `/logs` | Authenticated visitor records and rotating application log |
 | `/healthz` | Health response used by deployment checks |
 
 Do not link `/admin` or `/logs` into the main navigation unless that product
 decision changes. They are intentionally accessed by route.
 
 The admin page is divided into Monitoring, Locations, Systems, Settings, and
-Recovery. Configure each location's recipient list and select operational
-updates, daily summaries, or both under **Locations > Email Notifications**.
+Recovery. Configure recipients under **Locations > Email Notifications**. Each
+email address independently selects operational updates, daily summaries, or
+both. Only locations that currently contain systems are shown.
 SMTP credentials remain in the server-only `.env` file and are never returned
 to the browser or stored in the database.
 

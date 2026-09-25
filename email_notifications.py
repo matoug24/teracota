@@ -116,6 +116,62 @@ def parse_recipients(value) -> list[str]:
     return recipients
 
 
+def parse_recipient_subscriptions(
+    value,
+    default_updates: bool = False,
+    default_daily: bool = False,
+) -> list[dict]:
+    raw_values = value if isinstance(value, list) else re.split(r"[,;\n]+", str(value or ""))
+    subscriptions = []
+    positions = {}
+    for raw in raw_values:
+        if isinstance(raw, dict):
+            email_value = raw.get("email")
+            updates = bool(raw.get("update_notifications"))
+            daily = bool(raw.get("daily_summary"))
+        else:
+            email_value = raw
+            updates = default_updates
+            daily = default_daily
+        emails = parse_recipients([email_value])
+        if not emails:
+            continue
+        email = emails[0]
+        if email in positions:
+            existing = subscriptions[positions[email]]
+            existing["update_notifications"] = existing["update_notifications"] or updates
+            existing["daily_summary"] = existing["daily_summary"] or daily
+            continue
+        positions[email] = len(subscriptions)
+        subscriptions.append(
+            {
+                "email": email,
+                "update_notifications": updates,
+                "daily_summary": daily,
+            }
+        )
+    if len(subscriptions) > MAX_RECIPIENTS:
+        raise ValueError(f"A location can have at most {MAX_RECIPIENTS} recipients")
+    return subscriptions
+
+
+def _stored_subscriptions(row) -> list[dict]:
+    if not row:
+        return []
+    try:
+        stored = json.loads(row["recipients"])
+    except (TypeError, json.JSONDecodeError):
+        stored = row["recipients"]
+    try:
+        return parse_recipient_subscriptions(
+            stored,
+            bool(row["update_notifications"]),
+            bool(row["daily_summary"]),
+        )
+    except ValueError:
+        return []
+
+
 def smtp_configuration() -> dict:
     username = os.environ.get("TERACOTA_SMTP_USERNAME", "").strip()
     password = "".join(os.environ.get("TERACOTA_SMTP_APP_PASSWORD", "").split())
@@ -144,9 +200,12 @@ def _settings_payload(database_path: str | Path) -> dict:
     with _connect(database_path) as connection:
         locations = connection.execute(
             """
-            SELECT name FROM locations
-            UNION SELECT DISTINCT location AS name FROM systems
-            ORDER BY name
+            SELECT s.location AS name
+            FROM systems s
+            LEFT JOIN locations l ON l.name=s.location
+            WHERE s.location<>''
+            GROUP BY s.location
+            ORDER BY COALESCE(MAX(l.display_rank),2147483647),s.location
             """
         ).fetchall()
         saved = {
@@ -167,10 +226,7 @@ def _settings_payload(database_path: str | Path) -> dict:
     for location_row in locations:
         location = location_row["name"]
         row = saved.get(location)
-        try:
-            recipients = json.loads(row["recipients"]) if row else []
-        except (TypeError, json.JSONDecodeError):
-            recipients = []
+        recipients = _stored_subscriptions(row)
         settings.append(
             {
                 "location": location,
@@ -204,13 +260,15 @@ def create_notification_blueprint(database_path: str | Path) -> Blueprint:
     def update_notification_settings(location: str):
         payload = request.get_json(force=True)
         try:
-            recipients = parse_recipients(payload.get("recipients"))
+            recipients = parse_recipient_subscriptions(
+                payload.get("recipients"),
+                bool(payload.get("update_notifications")),
+                bool(payload.get("daily_summary")),
+            )
         except ValueError as error:
             return jsonify({"message": str(error)}), 400
-        update_notifications = bool(payload.get("update_notifications"))
-        daily_summary = bool(payload.get("daily_summary"))
-        if (update_notifications or daily_summary) and not recipients:
-            return jsonify({"message": "Add at least one recipient before enabling email"}), 400
+        update_notifications = any(item["update_notifications"] for item in recipients)
+        daily_summary = any(item["daily_summary"] for item in recipients)
         initialize_notification_schema(database_path)
         with _connect(database_path) as connection:
             exists = connection.execute(
@@ -293,15 +351,16 @@ def queue_update_notification(
     initialize_notification_schema(database_path)
     with _connect(database_path) as connection:
         row = connection.execute(
-            "SELECT recipients,update_notifications FROM notification_settings WHERE location=?",
+            "SELECT recipients,update_notifications,daily_summary FROM notification_settings WHERE location=?",
             (location,),
         ).fetchone()
-        if not row or not row["update_notifications"]:
+        if not row:
             return None
-        try:
-            recipients = parse_recipients(json.loads(row["recipients"]))
-        except (TypeError, json.JSONDecodeError, ValueError):
-            return None
+        recipients = [
+            item["email"]
+            for item in _stored_subscriptions(row)
+            if item["update_notifications"]
+        ]
         if not recipients:
             return None
         lines = [
@@ -457,13 +516,18 @@ def queue_daily_summaries(database_path: str | Path, summary_date: date | None =
     queued = 0
     with _connect(database_path) as connection:
         settings = connection.execute(
-            "SELECT * FROM notification_settings WHERE daily_summary=1 ORDER BY location"
+            """
+            SELECT ns.* FROM notification_settings ns
+            WHERE EXISTS(SELECT 1 FROM systems s WHERE s.location=ns.location)
+            ORDER BY ns.location
+            """
         ).fetchall()
         for setting in settings:
-            try:
-                recipients = parse_recipients(json.loads(setting["recipients"]))
-            except (TypeError, json.JSONDecodeError, ValueError):
-                continue
+            recipients = [
+                item["email"]
+                for item in _stored_subscriptions(setting)
+                if item["daily_summary"]
+            ]
             if not recipients:
                 continue
             existing = connection.execute(

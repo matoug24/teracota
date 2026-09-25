@@ -20,6 +20,7 @@ let updatePage = 1;
 let openIssueSeverityFilter = "All";
 let openIssuesPageNumber = 1;
 let logsPageNumber = 1;
+let logsViewTab = "visitors";
 
 const pageMode = document.body.dataset.page || "home";
 const initialSystemId = Number(document.body.dataset.systemId || 0);
@@ -1004,15 +1005,40 @@ async function renderLogsPage() {
   logsPage.classList.remove("hidden");
   setSystemsNavActive();
 
-  logsPage.innerHTML = `
+  const renderShell = (content) => `
     <div class="detail-page-header">
-      <div><p class="eyebrow">Restricted audit view</p><h2>Visitor Records</h2></div>
+      <div><p class="eyebrow">Restricted audit view</p><h2>Logs</h2></div>
       <a class="secondary-button link-button" href="/">Back to Systems</a>
     </div>
+    <nav class="admin-tabs logs-tabs" aria-label="Log views" role="tablist">
+      <button class="admin-tab ${logsViewTab === "visitors" ? "active" : ""}" type="button" role="tab" data-logs-tab="visitors" aria-selected="${logsViewTab === "visitors"}">Visitor Records</button>
+      <button class="admin-tab ${logsViewTab === "application" ? "active" : ""}" type="button" role="tab" data-logs-tab="application" aria-selected="${logsViewTab === "application"}">Application Log</button>
+    </nav>
+    ${content}
+  `;
+  const bindTabs = () => {
+    logsPage.querySelectorAll("[data-logs-tab]").forEach((button) => {
+      button.addEventListener("click", () => {
+        if (button.dataset.logsTab === logsViewTab) return;
+        logsViewTab = button.dataset.logsTab;
+        renderLogsPage();
+      });
+    });
+  };
+
+  if (logsViewTab === "application") {
+    logsPage.innerHTML = renderShell('<section class="admin-section" id="applicationLogsSection"></section>');
+    bindTabs();
+    window.AdminMonitor?.mountLogs(logsPage);
+    return;
+  }
+
+  logsPage.innerHTML = renderShell(`
     <section class="admin-section">
       <div class="logs-loading">Loading visitor records...</div>
     </section>
-  `;
+  `);
+  bindTabs();
 
   if (!visitorLogData) {
     try {
@@ -1032,6 +1058,7 @@ async function renderLogsPage() {
       return;
     }
   }
+  if (logsViewTab !== "visitors") return;
 
   const logs = visitorLogData.logs || [];
   const logsPagination = {
@@ -1041,11 +1068,7 @@ async function renderLogsPage() {
     start: logs.length ? ((visitorLogData.page - 1) * visitorLogData.per_page) + 1 : 0,
     end: logs.length ? ((visitorLogData.page - 1) * visitorLogData.per_page) + logs.length : 0,
   };
-  logsPage.innerHTML = `
-    <div class="detail-page-header">
-      <div><p class="eyebrow">Restricted audit view</p><h2>Visitor Records</h2></div>
-      <a class="secondary-button link-button" href="/">Back to Systems</a>
-    </div>
+  logsPage.innerHTML = renderShell(`
     <section class="admin-section">
       <header>
         <div><p class="eyebrow">Page access</p><h3>Recent Activity</h3></div>
@@ -1073,7 +1096,8 @@ async function renderLogsPage() {
       </div>
       ${renderPagination("logs", logsPagination, "records")}
     </section>
-  `;
+  `);
+  bindTabs();
 
   logsPage.querySelectorAll('[data-record-page="logs"]').forEach((button) => {
     button.addEventListener("click", () => {

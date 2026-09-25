@@ -86,9 +86,7 @@
 
 .notification-location {
   display: grid;
-  grid-template-columns: minmax(240px, 1fr) minmax(300px, 1.45fr) auto;
-  gap: 14px 20px;
-  align-items: end;
+  gap: 14px;
   padding: 16px;
   border: 1px solid var(--line);
   border-radius: 7px;
@@ -96,7 +94,6 @@
 }
 
 .notification-location-heading {
-  grid-column: 1 / -1;
   justify-content: space-between;
   gap: 12px;
 }
@@ -116,55 +113,60 @@
   color: #a23a2a;
 }
 
-.notification-recipients {
+.notification-recipient-list {
   display: grid;
-  gap: 6px;
+  gap: 8px;
 }
 
-.notification-recipients span,
-.notification-options legend {
+.notification-recipient-row {
+  display: grid;
+  grid-template-columns: minmax(220px, 1fr) auto auto 36px;
+  gap: 12px;
+  align-items: end;
+  padding: 10px 12px;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  background: var(--surface);
+}
+
+.notification-email-field {
+  display: grid;
+  gap: 5px;
+}
+
+.notification-email-field span {
   color: var(--muted);
   font-size: 0.78rem;
   font-weight: 800;
 }
 
-.notification-recipients textarea {
+.notification-email-field input {
   width: 100%;
-  min-height: 68px;
-  resize: vertical;
 }
 
-.notification-options {
-  min-width: 0;
-  min-height: 68px;
-  flex-wrap: wrap;
-  align-content: center;
-  gap: 8px 18px;
-  margin: 0;
-  padding: 9px 12px;
-  border: 1px solid var(--line);
-  border-radius: 6px;
-}
-
-.notification-options legend {
-  padding: 0 5px;
-}
-
-.notification-options label {
+.notification-choice {
   display: flex;
   align-items: center;
   gap: 7px;
+  min-height: 40px;
   white-space: nowrap;
 }
 
-.notification-options input {
+.notification-choice input {
   width: 17px;
   height: 17px;
   accent-color: var(--blue);
 }
 
-.notification-save {
-  min-width: 82px;
+.notification-form-actions {
+  display: flex;
+  justify-content: space-between;
+  gap: 10px;
+}
+
+.notification-remove {
+  align-self: end;
+  color: var(--red);
 }
 
 .notification-loading {
@@ -174,8 +176,20 @@
 
 @media (max-width: 860px) {
   .notification-location {
-    grid-template-columns: 1fr;
     align-items: stretch;
+  }
+
+  .notification-recipient-row {
+    grid-template-columns: 1fr 36px;
+  }
+
+  .notification-email-field {
+    grid-column: 1 / -1;
+  }
+
+  .notification-remove {
+    grid-column: 2;
+    grid-row: 2 / span 2;
   }
 
   .notification-header {
@@ -187,7 +201,8 @@
     justify-content: flex-start;
   }
 
-  .notification-save {
-    justify-self: start;
+  .notification-form-actions {
+    align-items: stretch;
+    flex-direction: column;
   }
 }

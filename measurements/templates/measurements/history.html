@@ -4,8 +4,8 @@
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <title>Measurement History - {{ system_name or location }}</title>
-    <link id="themeStylesheet" rel="stylesheet" href="/assets/{{ theme_css }}?v=20260920-structure" />
-    <link rel="stylesheet" href="/assets/measurements/history.css?v=20260920-structure" />
+    <link id="themeStylesheet" rel="stylesheet" href="/assets/{{ theme_css }}?v=20260923-issues" />
+    <link rel="stylesheet" href="/assets/measurements/history.css?v=20260924-summary" />
     <script src="/assets/measurements/vendor/plotly-basic-2.35.2.min.js"></script>
   </head>
   <body
@@ -43,17 +43,15 @@
           <label>To<input id="measurementEnd" type="date" /></label>
           <label>Robot Source<select id="measurementSource"></select></label>
           <label>Color<select id="measurementColor"></select></label>
-          <label>Car ID<select id="measurementCar"></select></label>
           <label>Body ID<select id="measurementBody"></select></label>
           <button id="applyMeasurementFilters" class="primary-button" type="button">Apply</button>
         </section>
 
         <section class="measurement-summary" aria-labelledby="measurementSummaryTitle">
           <div class="measurement-section-title">
-            <div><p class="eyebrow">Current selection</p><h3 id="measurementSummaryTitle">System Summary</h3></div>
+            <div><p class="eyebrow">Last 30 calendar days</p><h3 id="measurementSummaryTitle">System Summary</h3></div>
           </div>
-          <div class="measurement-summary-grid" id="measurementSummaryGrid"></div>
-          <p class="measurement-summary-text" id="measurementSummaryText"></p>
+          <div class="measurement-robot-summaries" id="measurementSummaryGrid"></div>
           <div class="measurement-warning hidden" id="measurementMappingWarning"></div>
         </section>
 
@@ -66,32 +64,44 @@
 
         <section id="measurementPanelOperation" class="measurement-panel active">
           <div class="measurement-section-title"><h3>Operation Summary</h3></div>
-          <div class="measurement-chart-grid">
-            <article class="measurement-chart-frame"><div id="measurementJobsChart" class="measurement-chart"></div></article>
-            <article class="measurement-chart-frame"><div id="measurementCountChart" class="measurement-chart"></div></article>
+          <div class="measurement-chart-grid measurement-chart-stack">
+            <article class="measurement-chart-frame">
+              <h4 class="measurement-chart-heading">Jobs per day by color</h4>
+              <div id="measurementJobsChart" class="measurement-chart"></div>
+            </article>
+            <article class="measurement-chart-frame">
+              <h4 class="measurement-chart-heading">Recorded measurements per day</h4>
+              <div id="measurementCountChart" class="measurement-chart"></div>
+            </article>
           </div>
         </section>
 
         <section id="measurementPanelThickness" class="measurement-panel">
           <div class="measurement-section-title">
             <h3>Thickness</h3>
-            <label>View<select id="measurementThicknessView"><option value="daily">Daily mean</option><option value="car">Car mean</option></select></label>
+            <div class="measurement-inline-controls">
+              <label>View<select id="measurementThicknessView"><option value="car">Vehicle Mean</option><option value="daily" selected>Daily Mean</option><option value="weekly">Weekly Mean</option></select></label>
+              <label>Variation<select id="measurementThicknessVariation"><option value="minmax">Min / max</option><option value="stdev">Standard deviation</option></select></label>
+            </div>
           </div>
-          <article class="measurement-chart-frame"><div id="measurementThicknessChart" class="measurement-chart measurement-chart-wide"></div></article>
-          <div class="measurement-table-wrap">
-            <table id="measurementThicknessTable">
-              <thead><tr><th>Job or day</th><th>Layer</th><th>N</th><th>Mean</th><th>Stdev</th><th>Min</th><th>Max</th></tr></thead>
-              <tbody></tbody>
-            </table>
-          </div>
+          <article class="measurement-chart-frame">
+            <h4 id="measurementThicknessChartTitle" class="measurement-chart-heading">Daily mean thickness</h4>
+            <div id="measurementThicknessChart" class="measurement-chart measurement-chart-wide"></div>
+          </article>
         </section>
 
         <section id="measurementPanelPerformance" class="measurement-panel">
-          <div class="measurement-section-title"><h3>System Performance</h3></div>
-          <div class="measurement-chart-grid">
-            <article class="measurement-chart-frame"><div id="measurementRateChart" class="measurement-chart"></div></article>
-            <article class="measurement-chart-frame"><div id="measurementValidChart" class="measurement-chart"></div></article>
+          <div class="measurement-section-title">
+            <h3>System Performance</h3>
+            <div class="measurement-segmented" role="group" aria-label="Performance display">
+              <button class="active" type="button" data-performance-mode="count" aria-pressed="true">Count</button>
+              <button type="button" data-performance-mode="percentage" aria-pressed="false">Percentage</button>
+            </div>
           </div>
+          <article class="measurement-chart-frame">
+            <h4 id="measurementPerformanceChartTitle" class="measurement-chart-heading">Valid measurements per day</h4>
+            <div id="measurementPerformanceChart" class="measurement-chart measurement-chart-wide"></div>
+          </article>
         </section>
 
         <section id="measurementPanelMisc" class="measurement-panel">
@@ -108,6 +118,6 @@
       </main>
     </div>
     <div id="measurementError" class="measurement-error" role="alert" hidden></div>
-    <script src="/assets/measurements/history.js?v=20260920-structure"></script>
+    <script src="/assets/measurements/history.js?v=20260924-performance"></script>
   </body>
 </html>

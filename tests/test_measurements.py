@@ -50,6 +50,12 @@ class MeasurementIntegrationTests(unittest.TestCase):
             connection.execute(
                 "INSERT INTO locations(name,contacts,notes,display_rank) VALUES('Client Plant','','',1)"
             )
+            connection.execute(
+                """
+                INSERT INTO system_status_history(system_id,status,started_at,note)
+                SELECT id,status,'2026-01-01','Initial test status' FROM systems
+                """
+            )
         cls.client = app_module.app.test_client()
         with cls.client.session_transaction() as session:
             session["logged_in"] = True
@@ -111,6 +117,41 @@ class MeasurementIntegrationTests(unittest.TestCase):
         ]
         self.assertEqual(aliases, ["Robot_2_SN203", "Robot_2_SN999"])
 
+    def test_page_shell_matches_requested_view_before_javascript_loads(self):
+        statistics = self.client.get("/statistics")
+        self.assertEqual(statistics.status_code, 200)
+        statistics_html = statistics.get_data(as_text=True)
+        self.assertIn('data-page="statistics"', statistics_html)
+        self.assertIn('class="statistics-page "', statistics_html)
+        self.assertIn('class="dashboard hidden"', statistics_html)
+
+        issues = self.client.get("/issues")
+        self.assertEqual(issues.status_code, 200)
+        issues_html = issues.get_data(as_text=True)
+        self.assertIn('data-page="issues"', issues_html)
+        self.assertIn('class="open-issues-page "', issues_html)
+        self.assertIn('class="dashboard hidden"', issues_html)
+
+    def test_status_history_note_is_saved(self):
+        state = self.client.get("/api/state").get_json()
+        entry = state["systems"][0]["status_history"][0]
+        response = self.client.put(
+            f'/api/status-history/{entry["id"]}',
+            json={
+                "status": entry["status"],
+                "started_at": entry["started_at"],
+                "note": "Verified after scheduled inspection",
+            },
+        )
+        self.assertEqual(response.status_code, 200)
+        updated = next(
+            item
+            for system in response.get_json()["systems"]
+            for item in system["status_history"]
+            if item["id"] == entry["id"]
+        )
+        self.assertEqual(updated["note"], "Verified after scheduled inspection")
+
     def test_sample_summary_and_system_filtered_api(self):
         sample = (
             ROOT
@@ -146,7 +187,27 @@ class MeasurementIntegrationTests(unittest.TestCase):
         self.assertEqual(response.status_code, 200)
         self.assertEqual(response.get_json()["jobs"], 1)
         self.assertGreater(response.get_json()["measurements"], 0)
-        self.assertEqual(self.client.get(f"/measurements/system/{robot_two['id']}").status_code, 200)
+        page = self.client.get(f"/measurements/system/{robot_two['id']}")
+        self.assertEqual(page.status_code, 200)
+        page_html = page.get_data(as_text=True)
+        self.assertIn("Last 30 calendar days", page_html)
+        self.assertNotIn('id="measurementCar"', page_html)
+        self.assertNotIn('id="measurementSummaryText"', page_html)
+        self.assertIn("measurement-chart-stack", page_html)
+        self.assertIn('option value="weekly"', page_html)
+        self.assertIn('id="measurementThicknessVariation"', page_html)
+        self.assertNotIn('id="measurementThicknessTable"', page_html)
+        self.assertIn('id="measurementPerformanceChart"', page_html)
+        self.assertIn('data-performance-mode="count"', page_html)
+        self.assertIn('data-performance-mode="percentage"', page_html)
+        self.assertNotIn('id="measurementRateChart"', page_html)
+        self.assertNotIn('id="measurementValidChart"', page_html)
+        weekly = self.client.get(
+            f"/api/measurements/metrics/thickness?location=Client%20Plant&system_id={robot_two['id']}&view=weekly"
+        )
+        self.assertEqual(weekly.status_code, 200)
+        self.assertTrue(weekly.get_json()["points"])
+        self.assertEqual(weekly.get_json()["points"][0]["x"], "2026-03-23")
 
     def test_z_admin_location_rename_moves_measurement_history(self):
         response = self.client.put(

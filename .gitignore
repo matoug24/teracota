@@ -22,12 +22,14 @@ backups/
 measurement_data/
 
 # Measurement uploader runtime secrets and state; keep the source/example files.
-measurement_uploader/uploader_config.json
+measurement_uploader/**/uploader_config.json
 measurement_uploader/*.sqlite3
 measurement_uploader/*.sqlite3-*
 measurement_uploader/*.db
 measurement_uploader/*.log
 measurement_uploader/*.lock
+measurement_uploader/KTP
+measurement_uploader/README_KTP.txt
 *.log
 
 # Local reference project; not part of the TeraCota application or public repo.

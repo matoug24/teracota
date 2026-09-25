@@ -411,8 +411,10 @@ and adds required columns when the schema grows. Existing records are not remove
 by these additive migrations. It also creates the measurement summary and
 upload-control databases under `TERACOTA_MEASUREMENT_DATA_DIR`.
 
-The measurement import timer checks verified uploads every 15 minutes. Run it
-immediately when testing a new uploader:
+The measurement import timer checks verified uploads once per day at 4:00 AM
+America/Toronto. This leaves three hours after the production uploader's 1:00
+AM schedule. Run it immediately when testing a new uploader or processing a
+daytime manual upload:
 
 ```bash
 sudo systemctl start teracota-measurement-import.service
@@ -507,7 +509,7 @@ Verify in a browser:
 2. Login appears before application data.
 3. Login works with the `.env` credentials.
 4. The Systems dashboard loads.
-5. `/admin`, `/statistics`, and `/logs` load after login.
+5. `/admin`, `/statistics`, `/issues`, and `/logs` load after login.
 6. Static assets under `/assets/css`, `/assets/js`, and
    `/assets/measurements` load without HTTP 404 errors.
 7. Add a temporary system, issue, and visit and test editing.
@@ -576,6 +578,11 @@ The updater:
 9. Restarts TeraCota, which runs database migrations.
 10. Waits for `/healthz` before reloading Nginx.
 11. Prints commits and the database backup path.
+
+The service can take a few seconds to bind port `8000` after the restart. The
+updater silently retries the local health check for up to 20 attempts. If the
+service never becomes healthy, the update fails and prints the recent systemd
+journal; `Health: OK` at the end means startup completed successfully.
 
 It preserves `.env`, `.venv`, all SQLite databases, measurement objects,
 backups, and Certbot's live HTTPS configuration. Its automatic pre-update backup

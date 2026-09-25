@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from collections import defaultdict
 import calendar
-from datetime import date
+from datetime import date, timedelta
 import math
 import re
 
@@ -261,6 +261,8 @@ def metric_series(
     metric: str | None = None,
     aliases: list[str] | None = None,
 ) -> dict:
+    if view not in {"car", "daily", "weekly"}:
+        raise ValueError("Unknown metric view")
     where, params = _arguments(filters, client, aliases)
     if group == "thickness":
         metric_clause = "m.metric_key LIKE 'Thickness\\_%' ESCAPE '\\'"
@@ -317,7 +319,11 @@ def metric_series(
     groups = defaultdict(list)
     labels = {}
     for row in rows:
-        key = (row["job_date"], row["metric_key"], row["layer_count"])
+        period = row["job_date"]
+        if view == "weekly":
+            job_date = date.fromisoformat(row["job_date"])
+            period = (job_date - timedelta(days=job_date.weekday())).isoformat()
+        key = (period, row["metric_key"], row["layer_count"])
         groups[key].append(row)
         labels[key] = _metric_label(row["metric_key"], row["layer_count"], config)
     points = []

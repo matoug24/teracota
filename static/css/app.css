@@ -18,6 +18,11 @@
   box-sizing: border-box;
 }
 
+html {
+  overflow-y: scroll;
+  scrollbar-gutter: stable;
+}
+
 body {
   margin: 0;
   min-width: 320px;
@@ -941,13 +946,22 @@ dialog::backdrop {
 }
 
 .topbar .brand {
+  flex: 1 1 0;
+  min-width: 0;
   margin-bottom: 0;
 }
 
 .topbar .nav-tabs {
   display: flex;
+  flex: 0 0 auto;
   gap: 8px;
   margin-bottom: 0;
+}
+
+.topbar .auth-area {
+  flex: 1 1 0;
+  min-width: 0;
+  justify-content: flex-end;
 }
 
 .topbar .nav-tab {
@@ -1072,6 +1086,15 @@ dialog::backdrop {
   gap: 20px;
 }
 
+.open-issues-page {
+  display: grid;
+  gap: 20px;
+}
+
+.open-issues-page.hidden {
+  display: none;
+}
+
 .detail-page-header {
   display: flex;
   align-items: center;
@@ -1124,7 +1147,16 @@ dialog::backdrop {
 
 .timeline-history-block {
   display: grid;
+  align-content: start;
   gap: 8px;
+}
+
+.timeline-history-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 22px;
+  border-top: 1px solid var(--line);
+  padding-top: 14px;
 }
 
 .timeline-history-title {
@@ -1142,8 +1174,8 @@ dialog::backdrop {
 }
 
 .system-update-history {
-  border-top: 1px solid var(--line);
-  padding-top: 14px;
+  border-top: 0;
+  padding-top: 0;
 }
 
 .system-update-list {
@@ -1223,6 +1255,23 @@ dialog::backdrop {
 .status-history-item small {
   color: var(--muted);
   font-weight: 700;
+}
+
+.status-history-stack,
+.timeline-history-grid .system-update-list {
+  display: grid;
+  align-items: start;
+}
+
+.status-history-stack .status-history-item,
+.timeline-history-grid .system-update-history-item {
+  width: 100%;
+  max-width: 100%;
+}
+
+.status-history-stack .status-history-item small {
+  min-width: 0;
+  overflow-wrap: anywhere;
 }
 
 .timeline-summary {
@@ -1726,6 +1775,11 @@ dialog::backdrop {
   grid-column: 1 / -1;
 }
 
+.statistics-activity-section .activity-chart {
+  min-width: 560px;
+  height: 220px;
+}
+
 .statistics-section > header {
   display: flex;
   align-items: flex-start;
@@ -1942,6 +1996,96 @@ dialog::backdrop {
   color: var(--text);
   font-weight: 800;
   text-decoration: none;
+}
+
+.metric-link {
+  color: inherit;
+  text-decoration: none;
+  transition: border-color 140ms ease, box-shadow 140ms ease, transform 140ms ease;
+}
+
+.metric-link:hover,
+.metric-link:focus-visible {
+  border-color: var(--blue);
+  box-shadow: var(--shadow);
+  transform: translateY(-1px);
+}
+
+.system-record-tabs {
+  display: flex;
+  justify-content: center;
+  gap: 8px;
+  width: min(820px, 100%);
+  margin: 4px auto 0;
+  border-bottom: 1px solid var(--line);
+  padding: 0 8px;
+}
+
+.system-record-tab {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 9px;
+  min-width: 180px;
+  min-height: 48px;
+  border: 0;
+  border-bottom: 3px solid transparent;
+  background: transparent;
+  color: var(--muted);
+  padding: 10px 18px;
+  font-size: 0.98rem;
+  font-weight: 850;
+}
+
+.system-record-tab span {
+  min-width: 24px;
+  border-radius: 4px;
+  background: var(--surface-alt);
+  padding: 2px 6px;
+  color: var(--muted);
+  font-size: 0.74rem;
+}
+
+.system-record-tab:hover,
+.system-record-tab.active {
+  border-bottom-color: var(--blue);
+  color: var(--blue);
+}
+
+.system-record-tab.active span {
+  background: var(--blue);
+  color: #ffffff;
+}
+
+.system-record-panel {
+  width: 100%;
+}
+
+.open-issues-header {
+  margin-bottom: 0;
+}
+
+.open-issues-register {
+  gap: 18px;
+}
+
+.open-issue-card {
+  display: grid;
+  gap: 10px;
+}
+
+.open-issue-location {
+  margin: 0 0 3px;
+  color: var(--muted);
+  font-size: 0.74rem;
+  font-weight: 800;
+  text-transform: uppercase;
+}
+
+.open-issue-card .issue-system-links {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
 }
 
 .startup-error {
@@ -2284,6 +2428,16 @@ button.task-item:hover {
     width: 100%;
   }
 
+  .topbar .brand,
+  .topbar .auth-area {
+    flex: none;
+    width: 100%;
+  }
+
+  .topbar .auth-area {
+    justify-content: flex-start;
+  }
+
   .topbar .nav-tabs {
     flex-direction: column;
   }
@@ -2316,6 +2470,30 @@ button.task-item:hover {
 
   .statistics-section.statistics-wide {
     grid-column: auto;
+  }
+
+  .timeline-history-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .system-record-tabs {
+    align-items: stretch;
+    flex-direction: column;
+    border-bottom: 0;
+    padding: 0;
+  }
+
+  .system-record-tab {
+    width: 100%;
+    min-width: 0;
+    border: 1px solid var(--line);
+    border-left: 4px solid transparent;
+  }
+
+  .system-record-tab:hover,
+  .system-record-tab.active {
+    border-color: var(--line);
+    border-left-color: var(--blue);
   }
 
   .statistics-section > header,

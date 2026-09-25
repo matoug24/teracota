@@ -11,10 +11,13 @@ let detailRangeOffset = 0;
 let detailRangeInitialized = false;
 let issueSeverityFilter = "All";
 let issueStatusFilter = "All";
-let issueTypeFilter = "All";
 let visitTypeFilter = "All";
+let systemRecordTab = "visits";
 let issuePage = 1;
 let visitPage = 1;
+let updatePage = 1;
+let openIssueSeverityFilter = "All";
+let openIssuesPageNumber = 1;
 let logsPageNumber = 1;
 
 const pageMode = document.body.dataset.page || "home";
@@ -42,6 +45,7 @@ const locationDetailPage = document.querySelector("#locationDetailPage");
 const adminPage = document.querySelector("#adminPage");
 const logsPage = document.querySelector("#logsPage");
 const statisticsPage = document.querySelector("#statisticsPage") || createPageContainer("statisticsPage", "statistics-page hidden");
+const openIssuesPage = document.querySelector("#openIssuesPage") || createPageContainer("openIssuesPage", "open-issues-page hidden");
 const themeStylesheet = document.querySelector("#themeStylesheet");
 const entryDialog = document.querySelector("#entryDialog");
 const entryForm = document.querySelector("#entryForm");
@@ -139,11 +143,12 @@ function renderStartupError(message) {
     admin: adminPage,
     logs: logsPage,
     statistics: statisticsPage,
+    issues: openIssuesPage,
     system: systemDetailPage,
     location: locationDetailPage,
   };
   const target = targets[pageMode] || systemsView;
-  [systemsView, developmentPanel, systemDetailPage, locationDetailPage, adminPage, logsPage, statisticsPage]
+  [systemsView, developmentPanel, systemDetailPage, locationDetailPage, adminPage, logsPage, statisticsPage, openIssuesPage]
     .forEach((page) => page?.classList.add("hidden"));
   target?.classList.remove("hidden");
   if (target) {
@@ -212,6 +217,11 @@ function render() {
     return;
   }
 
+  if (pageMode === "issues") {
+    renderOpenIssuesPage();
+    return;
+  }
+
   const showingDevelopment = activeView === "development";
   systemsView.classList.toggle("hidden", showingDevelopment);
   developmentPanel.classList.toggle("hidden", !showingDevelopment);
@@ -220,6 +230,7 @@ function render() {
   adminPage.classList.add("hidden");
   logsPage.classList.add("hidden");
   statisticsPage.classList.add("hidden");
+  openIssuesPage.classList.add("hidden");
 
   document.querySelectorAll(".nav-tab").forEach((button) => {
     button.classList.toggle("active", button.dataset.view === activeView);
@@ -238,7 +249,7 @@ function applyTheme() {
     "control-room": "control_room.css",
     instrument: "instrument.css",
   };
-  const nextHref = `/assets/css/${filenames[theme.id] || filenames.standard}?v=20260920-structure`;
+  const nextHref = `/assets/css/${filenames[theme.id] || filenames.standard}?v=20260923-issues`;
   if (!themeStylesheet.href.endsWith(nextHref)) themeStylesheet.href = nextHref;
 }
 
@@ -285,12 +296,7 @@ function renderMetrics() {
   ];
 
   metricGrid.innerHTML = metrics
-    .map(([label, value]) => `
-      <article class="metric">
-        <span>${escapeHtml(label)}</span>
-        <strong>${value}</strong>
-      </article>
-    `)
+    .map(([label, value]) => metricCard(label, value, label === "Open Issues" ? "/issues" : ""))
     .join("");
 }
 
@@ -362,10 +368,11 @@ function renderTimelineRow(system, start, end) {
 }
 
 function renderStatusSegment(segment) {
+  const note = segment.note ? `\n${segment.note}` : "";
   return `
     <span class="status-bar status-segment ${getStatusClass(segment.status)}"
       style="left: ${segment.left}%; width: ${segment.width}%"
-      title="${escapeAttribute(segment.status)} from ${escapeAttribute(formatDate(segment.startedAt))}"></span>
+      title="${escapeAttribute(`${segment.status} from ${formatDate(segment.startedAt)}${note}`)}"></span>
   `;
 }
 
@@ -387,6 +394,7 @@ function renderSystemDetailPage() {
   adminPage.classList.add("hidden");
   logsPage.classList.add("hidden");
   statisticsPage.classList.add("hidden");
+  openIssuesPage.classList.add("hidden");
   systemDetailPage.classList.remove("hidden");
 
   document.querySelectorAll(".nav-tab").forEach((button) => {
@@ -415,18 +423,18 @@ function renderSystemDetailPage() {
   const filteredIssues = system.issues.filter((issue) => (
     (issueSeverityFilter === "All" || normalizeSeverity(issue.severity) === issueSeverityFilter)
     && (issueStatusFilter === "All" || issue.status === issueStatusFilter)
-  ));
-  const issueAndUpdateRecords = [
-    ...(issueTypeFilter === "Updates" ? [] : filteredIssues.map((issue) => ({ kind: "issue", date: issue.opened, item: issue }))),
-    ...(issueTypeFilter === "Issues" ? [] : (system.updates || []).map((update) => ({ kind: "update", date: update.date, item: update }))),
-  ].sort((a, b) => String(b.date).localeCompare(String(a.date)) || b.item.id - a.item.id);
+  )).sort((a, b) => String(b.opened).localeCompare(String(a.opened)) || b.id - a.id);
+  const visibleUpdates = [...(system.updates || [])]
+    .sort((a, b) => String(b.date).localeCompare(String(a.date)) || b.id - a.id);
   const visibleVisits = system.maintenance.filter((record) => (
     visitTypeFilter === "All" || splitList(record.type).includes(visitTypeFilter)
   ));
-  const issuePagination = paginateItems(issueAndUpdateRecords, issuePage, systemRecordPageSize);
+  const issuePagination = paginateItems(filteredIssues, issuePage, systemRecordPageSize);
   const visitPagination = paginateItems(visibleVisits, visitPage, systemRecordPageSize);
+  const updatePagination = paginateItems(visibleUpdates, updatePage, systemRecordPageSize);
   issuePage = issuePagination.page;
   visitPage = visitPagination.page;
+  updatePage = updatePagination.page;
 
   systemDetailPage.innerHTML = `
     <div class="detail-page-header">
@@ -455,18 +463,21 @@ function renderSystemDetailPage() {
       </header>
       ${renderTimelineScale(detailTimeline.start, detailTimeline.end, "detail-timeline-scale")}
       ${renderTimelineRow(system, detailTimeline.start, detailTimeline.end)}
-      <div class="timeline-history-block">
-        <span class="timeline-history-title">System Status Changes</span>
-        <div class="status-history-list" aria-label="Status history">
-          ${system.status_history.map((entry) => `
-            <span class="status-history-item">
-              <i class="status-dot ${getStatusClass(entry.status)}"></i>
-              ${escapeHtml(entry.status)} <small>from ${formatDate(entry.started_at)}</small>
-            </span>
-          `).join("")}
+      <div class="timeline-history-grid">
+        <div class="timeline-history-block">
+          <span class="timeline-history-title">System Status Changes</span>
+          <div class="status-history-list status-history-stack" aria-label="Status history">
+            ${system.status_history.map((entry) => `
+              <span class="status-history-item">
+                <i class="status-dot ${getStatusClass(entry.status)}"></i>
+                <strong>${escapeHtml(entry.status)}</strong>
+                <small>from ${formatDate(entry.started_at)}${entry.note ? ` - ${escapeHtml(entry.note)}` : ""}</small>
+              </span>
+            `).join("")}
+          </div>
         </div>
+        ${renderSystemUpdateHistory(system.updates || [])}
       </div>
-      ${renderSystemUpdateHistory(system.updates || [])}
       <div class="timeline-summary">
         <div><span>Open Issues</span><strong>${openIssueCount}</strong></div>
         <div><span>Total Issues</span><strong>${system.issues.length}</strong></div>
@@ -475,24 +486,31 @@ function renderSystemDetailPage() {
       </div>
     </section>
 
-    <div class="detail-layout">
-      <section class="detail-section">
-        <header>
-          <h3>Issues and Updates</h3>
-          <span class="tag">${system.issues.length + (system.updates || []).length} total</span>
-        </header>
-        ${renderFilterGroup("Type", "issue-type", ["All", "Issues", "Updates"], issueTypeFilter)}
-        ${issueTypeFilter === "Updates" ? "" : renderFilterGroup("Severity", "issue-severity", ["All", "Low", "Medium", "High"], issueSeverityFilter)}
-        ${issueTypeFilter === "Updates" ? "" : renderFilterGroup("Status", "issue-status", ["All", "Open", "Closed"], issueStatusFilter)}
-        <div class="issue-list">
-          ${renderIssueAndUpdateItems(issuePagination.items)}
-        </div>
-        ${renderPagination("issues", issuePagination, "records")}
-      </section>
+    <nav class="system-record-tabs" aria-label="System records">
+      <button class="system-record-tab ${systemRecordTab === "visits" ? "active" : ""}" type="button" data-system-record-tab="visits">Site Visits <span>${system.maintenance.length}</span></button>
+      <button class="system-record-tab ${systemRecordTab === "issues" ? "active" : ""}" type="button" data-system-record-tab="issues">Issues <span>${system.issues.length}</span></button>
+      <button class="system-record-tab ${systemRecordTab === "updates" ? "active" : ""}" type="button" data-system-record-tab="updates">System Updates <span>${(system.updates || []).length}</span></button>
+    </nav>
 
-      <section class="detail-section">
+    ${systemRecordTab === "issues" ? `
+      <section class="detail-section system-record-panel">
         <header>
-          <h3>Visit History</h3>
+          <h3>Issues</h3>
+          <span class="tag">${system.issues.length} total</span>
+        </header>
+        ${renderFilterGroup("Severity", "issue-severity", ["All", "Low", "Medium", "High"], issueSeverityFilter)}
+        ${renderFilterGroup("Status", "issue-status", ["All", "Open", "Closed"], issueStatusFilter)}
+        <div class="issue-list">
+          ${renderIssueItems(issuePagination.items, "No issues match the selected filters.")}
+        </div>
+        ${renderPagination("issues", issuePagination, "issues")}
+      </section>
+    ` : ""}
+
+    ${systemRecordTab === "visits" ? `
+      <section class="detail-section system-record-panel">
+        <header>
+          <h3>Site Visits</h3>
           <span class="tag">${system.maintenance.length} visits</span>
         </header>
         ${renderFilterGroup("Visit Purpose", "visit-type", ["All", ...visitCategories], visitTypeFilter)}
@@ -501,7 +519,22 @@ function renderSystemDetailPage() {
         </div>
         ${renderPagination("visits", visitPagination, "visits")}
       </section>
-    </div>
+    ` : ""}
+
+    ${systemRecordTab === "updates" ? `
+      <section class="detail-section system-record-panel">
+        <header>
+          <h3>System Updates</h3>
+          <span class="tag">${(system.updates || []).length} updates</span>
+        </header>
+        <div class="issue-list">
+          ${updatePagination.items.length
+            ? updatePagination.items.map(renderSystemUpdateItem).join("")
+            : '<div class="issue-item"><h3>No system updates</h3><p>No calibration or software updates have been recorded.</p></div>'}
+        </div>
+        ${renderPagination("updates", updatePagination, "updates")}
+      </section>
+    ` : ""}
   `;
 
   spreadTimelineMarkers(systemDetailPage);
@@ -542,6 +575,12 @@ function bindSystemDetailActions(system) {
 }
 
 function bindRecordFilters() {
+  systemDetailPage.querySelectorAll("[data-system-record-tab]").forEach((button) => {
+    button.addEventListener("click", () => {
+      systemRecordTab = button.dataset.systemRecordTab;
+      renderSystemDetailPage();
+    });
+  });
   systemDetailPage.querySelectorAll("[data-filter-kind]").forEach((button) => {
     button.addEventListener("click", () => {
       const kind = button.dataset.filterKind;
@@ -552,10 +591,6 @@ function bindRecordFilters() {
       }
       if (kind === "issue-status") {
         issueStatusFilter = value;
-        issuePage = 1;
-      }
-      if (kind === "issue-type") {
-        issueTypeFilter = value;
         issuePage = 1;
       }
       if (kind === "visit-type") {
@@ -570,6 +605,7 @@ function bindRecordFilters() {
       const page = Number(button.dataset.pageValue);
       if (button.dataset.recordPage === "issues") issuePage = page;
       if (button.dataset.recordPage === "visits") visitPage = page;
+      if (button.dataset.recordPage === "updates") updatePage = page;
       renderSystemDetailPage();
     });
   });
@@ -608,6 +644,7 @@ function renderLocationDetailPage() {
   adminPage.classList.add("hidden");
   logsPage.classList.add("hidden");
   statisticsPage.classList.add("hidden");
+  openIssuesPage.classList.add("hidden");
   locationDetailPage.classList.remove("hidden");
   setSystemsNavActive();
 
@@ -697,6 +734,7 @@ function renderAdminPage() {
   locationDetailPage.classList.add("hidden");
   logsPage.classList.add("hidden");
   statisticsPage.classList.add("hidden");
+  openIssuesPage.classList.add("hidden");
   adminPage.classList.remove("hidden");
   setSystemsNavActive();
 
@@ -917,6 +955,7 @@ async function renderLogsPage() {
   locationDetailPage.classList.add("hidden");
   adminPage.classList.add("hidden");
   statisticsPage.classList.add("hidden");
+  openIssuesPage.classList.add("hidden");
   logsPage.classList.remove("hidden");
   setSystemsNavActive();
 
@@ -1007,6 +1046,7 @@ function renderStatisticsPage() {
   locationDetailPage.classList.add("hidden");
   adminPage.classList.add("hidden");
   logsPage.classList.add("hidden");
+  openIssuesPage.classList.add("hidden");
   statisticsPage.classList.remove("hidden");
   document.querySelectorAll(".nav-tab").forEach((button) => {
     button.classList.toggle("active", button.dataset.view === "statistics");
@@ -1044,6 +1084,7 @@ function renderStatisticsPage() {
   }));
   const unclassifiedIssues = issues.filter((issue) => !splitList(issue.related_to).length).length;
   if (unclassifiedIssues) relationBars.push({ label: "Not classified", value: unclassifiedIssues, className: "stat-muted" });
+  relationBars.sort((a, b) => b.value - a.value || a.label.localeCompare(b.label));
 
   const purposeBars = visitCategories.map((purpose) => ({
     label: purpose,
@@ -1083,7 +1124,7 @@ function renderStatisticsPage() {
     <div class="metric-grid statistics-metric-grid" aria-label="Operations summary">
       ${metricCard("Systems", systems.length)}
       ${metricCard("Operational", `${operational}/${systems.length} (${availability}%)`)}
-      ${metricCard("Open Issues", openIssues.length)}
+      ${metricCard("Open Issues", openIssues.length, "/issues")}
       ${metricCard("Site Visits - 90 Days", recentVisits)}
     </div>
 
@@ -1098,12 +1139,12 @@ function renderStatisticsPage() {
         ${renderStatBars(relationBars, "No issues have been recorded.")}
       </section>
 
-      <section class="statistics-section statistics-wide">
+      <section class="statistics-section statistics-activity-section">
         <header><p class="eyebrow">Last 12 months</p><div class="statistics-legend"><span><i class="activity-key visits"></i>Site visits</span><span><i class="activity-key issues"></i>Issues opened</span></div></header>
         ${renderActivityChart(monthlyActivity, activityMax)}
       </section>
 
-      <section class="statistics-section statistics-wide">
+      <section class="statistics-section">
         <header><p class="eyebrow">Site visits summary</p><span class="tag">${siteVisits.length} visits</span></header>
         ${renderStatBars(purposeBars, "No visits have been recorded.")}
       </section>
@@ -1122,6 +1163,84 @@ function renderStatisticsPage() {
         </div>
       </section>
     </div>
+  `;
+}
+
+function renderOpenIssuesPage() {
+  systemsView.classList.add("hidden");
+  developmentPanel.classList.add("hidden");
+  systemDetailPage.classList.add("hidden");
+  locationDetailPage.classList.add("hidden");
+  adminPage.classList.add("hidden");
+  logsPage.classList.add("hidden");
+  statisticsPage.classList.add("hidden");
+  openIssuesPage.classList.remove("hidden");
+  setSystemsNavActive();
+
+  const issues = uniqueItemsById(state.systems.flatMap((system) => system.issues))
+    .filter((issue) => issue.status !== "Closed")
+    .filter((issue) => (
+      openIssueSeverityFilter === "All"
+      || normalizeSeverity(issue.severity) === openIssueSeverityFilter
+    ))
+    .sort((a, b) => String(b.opened).localeCompare(String(a.opened)) || b.id - a.id);
+  const pagination = paginateItems(issues, openIssuesPageNumber, systemRecordPageSize);
+  openIssuesPageNumber = pagination.page;
+
+  openIssuesPage.innerHTML = `
+    <div class="detail-page-header">
+      <a class="secondary-button link-button" href="/">Back to Systems</a>
+    </div>
+    <div class="section-header open-issues-header">
+      <div><p class="eyebrow">Fleet-wide issue register</p><h2>Open Issues</h2></div>
+      <span class="tag">${issues.length} open</span>
+    </div>
+    <section class="detail-section open-issues-register">
+      ${renderFilterGroup("Severity", "open-issue-severity", ["All", "Low", "Medium", "High"], openIssueSeverityFilter)}
+      <div class="issue-list">
+        ${pagination.items.length
+          ? pagination.items.map(renderOpenIssueCard).join("")
+          : '<div class="issue-item"><h3>No open issues</h3><p>No issues match the selected severity.</p></div>'}
+      </div>
+      ${renderPagination("open-issues", pagination, "issues")}
+    </section>
+  `;
+
+  openIssuesPage.querySelectorAll('[data-filter-kind="open-issue-severity"]').forEach((button) => {
+    button.addEventListener("click", () => {
+      openIssueSeverityFilter = button.dataset.filterValue;
+      openIssuesPageNumber = 1;
+      renderOpenIssuesPage();
+    });
+  });
+  openIssuesPage.querySelectorAll('[data-record-page="open-issues"]').forEach((button) => {
+    button.addEventListener("click", () => {
+      openIssuesPageNumber = Number(button.dataset.pageValue);
+      renderOpenIssuesPage();
+    });
+  });
+}
+
+function renderOpenIssueCard(issue) {
+  const linkedSystems = systemsLinkedToIssue(issue);
+  const locations = [...new Set(linkedSystems.map((system) => system.location))];
+  return `
+    <article class="issue-item open-issue-card issue-card-${getSeverityClass(normalizeSeverity(issue.severity))}">
+      <div class="item-header">
+        <div>
+          <p class="open-issue-location">${locations.map(escapeHtml).join(" / ") || "Unknown location"}</p>
+          <h3>${escapeHtml(issue.title)}</h3>
+        </div>
+        <span class="tag severity-tag ${getSeverityClass(normalizeSeverity(issue.severity))}">${escapeHtml(normalizeSeverity(issue.severity))}</span>
+      </div>
+      <p>${escapeHtml(issue.notes || "No notes added.")}</p>
+      <div class="issue-system-links" aria-label="Affected systems">${renderIssueSystemLinks(issue)}</div>
+      <div class="tag-row">
+        ${renderIssueRelationTags(issue)}
+        <span class="tag">Reported by ${escapeHtml(issue.reported_by || "Unknown")}</span>
+        <span class="tag">Opened ${formatDate(issue.opened)}</span>
+      </div>
+    </article>
   `;
 }
 
@@ -1187,8 +1306,11 @@ function setSystemsNavActive() {
   });
 }
 
-function metricCard(label, value) {
-  return `<article class="metric"><span>${escapeHtml(label)}</span><strong>${value}</strong></article>`;
+function metricCard(label, value, href = "") {
+  const content = `<span>${escapeHtml(label)}</span><strong>${value}</strong>`;
+  return href
+    ? `<a class="metric metric-link" href="${escapeAttribute(href)}">${content}</a>`
+    : `<article class="metric">${content}</article>`;
 }
 
 function repeatedIssueSummary(issues) {
@@ -1583,6 +1705,7 @@ function systemFields(system = {}, options = {}) {
       "Commissioning",
     ]),
     field("status_start", "Status Effective Date", "date", new Date().toISOString().slice(0, 10)),
+    field("status_note", "Status Change Note", "textarea", ""),
     field("notes", "Operations Notes", "textarea", system.notes || ""),
   ];
 }
@@ -1597,6 +1720,7 @@ function statusHistoryFields(entry = {}) {
       "Commissioning",
     ]),
     field("started_at", "Effective Date", "date", entry.started_at || new Date().toISOString().slice(0, 10)),
+    field("note", "Status Change Note", "textarea", entry.note || ""),
   ];
 }
 
@@ -1612,7 +1736,7 @@ function renderStatusHistoryManager(system) {
       <div class="dialog-history-list">
         ${system.status_history.map((entry) => `
           <div class="dialog-history-row">
-            <span class="status-history-label"><i class="status-dot ${getStatusClass(entry.status)}"></i><strong>${escapeHtml(entry.status)}</strong><small>${formatDate(entry.started_at)}</small></span>
+            <span class="status-history-label"><i class="status-dot ${getStatusClass(entry.status)}"></i><strong>${escapeHtml(entry.status)}</strong><small>${formatDate(entry.started_at)}${entry.note ? ` - ${escapeHtml(entry.note)}` : ""}</small></span>
             <div class="item-actions">
               <button class="secondary-button" type="button" data-edit-status-history="${entry.id}">Edit</button>
               <button class="danger-button" type="button" data-delete-status-history="${entry.id}" ${canDelete ? "" : "disabled"} title="${canDelete ? "Delete status event" : "A system must keep one status event"}">Delete</button>
@@ -1903,22 +2027,6 @@ function renderIssueItems(issues, emptyMessage) {
   `).join("");
 }
 
-function renderIssueAndUpdateItems(records) {
-  if (!records.length) {
-    return `
-      <div class="issue-item">
-        <h3>No records</h3>
-        <p>No issues or updates match the selected filters.</p>
-      </div>
-    `;
-  }
-  return records.map((record) => (
-    record.kind === "issue"
-      ? renderIssueItems([record.item], "")
-      : renderSystemUpdateItem(record.item)
-  )).join("");
-}
-
 function renderSystemUpdateItem(update) {
   return `
     <article class="issue-item update-record-item">
@@ -2047,7 +2155,7 @@ function eventMarkers(system, start, end) {
 
 function statusSegments(system, start, end) {
   const history = [...(system.status_history || [])].sort((a, b) => String(a.started_at).localeCompare(String(b.started_at)));
-  if (!history.length) return [{ status: system.status, startedAt: start, left: 0, width: 100 }];
+  if (!history.length) return [{ status: system.status, startedAt: start, note: "", left: 0, width: 100 }];
 
   return history.map((entry, index) => {
     const segmentStart = startOfDay(new Date(`${entry.started_at}T00:00:00`));
@@ -2058,7 +2166,7 @@ function statusSegments(system, start, end) {
     if (clippedEnd <= clippedStart) return null;
     const left = Math.max(0, timelinePositionFromDate(clippedStart, start, end));
     const right = Math.min(100, timelinePositionFromDate(clippedEnd, start, end));
-    return { status: entry.status, startedAt: entry.started_at, left, width: Math.max(0.4, right - left) };
+    return { status: entry.status, startedAt: entry.started_at, note: entry.note || "", left, width: Math.max(0.4, right - left) };
   }).filter(Boolean);
 }
 

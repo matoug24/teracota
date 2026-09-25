@@ -3,6 +3,8 @@ const measurementPage = {
   initialSystemId: Number(document.body.dataset.systemId || 0),
   initialSystemName: document.body.dataset.systemName || "",
   options: null,
+  performanceMode: "count",
+  performanceRows: [],
 };
 
 const measurementPalette = ["#12747b", "#d08a22", "#3f6fa9", "#8b5a8f", "#5f8d42", "#b54d59", "#66727b"];
@@ -91,7 +93,6 @@ function measurementQuery(extra = {}) {
     start: measurementElement("measurementStart").value,
     end: measurementElement("measurementEnd").value,
     color: measurementElement("measurementColor").value,
-    car: measurementElement("measurementCar").value,
     body: measurementElement("measurementBody").value,
     ...extra,
   });
@@ -105,14 +106,14 @@ function measurementQuery(extra = {}) {
 
 function measurementLayout(title, yTitle) {
   return {
-    title: { text: title, x: 0.03, font: { size: 17, color: "#243139" } },
-    margin: { l: 64, r: 24, t: 62, b: 74 },
+    title: { text: title, x: 0.03, font: { size: 19, color: "#243139" } },
+    margin: { l: 72, r: 28, t: title ? 108 : 72, b: 78 },
     paper_bgcolor: "#ffffff",
     plot_bgcolor: "#ffffff",
-    font: { family: "Inter, Segoe UI, sans-serif", color: "#43515a" },
-    xaxis: { gridcolor: "#e8edef", tickangle: -30, automargin: true },
-    yaxis: { title: yTitle, gridcolor: "#e8edef", rangemode: "tozero" },
-    legend: { orientation: "h", y: 1.12 },
+    font: { family: "Inter, Segoe UI, sans-serif", size: 14, color: "#43515a" },
+    xaxis: { gridcolor: "#e8edef", tickangle: -30, automargin: true, tickfont: { size: 13 } },
+    yaxis: { title: { text: yTitle, font: { size: 14 } }, gridcolor: "#e8edef", rangemode: "tozero", tickfont: { size: 13 } },
+    legend: { orientation: "h", x: 0.03, y: title ? 1.2 : 1.12, font: { size: 13 } },
     hovermode: "x unified",
   };
 }
@@ -133,7 +134,7 @@ function measurementGroupedTraces(rows, valueKey) {
   }));
 }
 
-function measurementPointTraces(points, valueKey = "mean", includeErrors = false) {
+function measurementPointTraces(points, valueKey = "mean", errorMode = "") {
   const groups = new Map();
   points.forEach((point) => {
     if (!groups.has(point.series)) groups.set(point.series, []);
@@ -146,14 +147,22 @@ function measurementPointTraces(points, valueKey = "mean", includeErrors = false
       name,
       x: values.map((item) => item.x),
       y: values.map((item) => item[valueKey]),
-      customdata: values.map((item) => [item.count, item.min, item.max]),
-      hovertemplate: "%{x}<br>%{y:.3f}<br>N=%{customdata[0]}<br>Min=%{customdata[1]:.3f}<br>Max=%{customdata[2]:.3f}<extra>%{fullData.name}</extra>",
+      customdata: values.map((item) => [item.count, item.min, item.max, item.stdev]),
+      hovertemplate: "%{x}<br>%{y:.3f}<br>N=%{customdata[0]}<br>Min=%{customdata[1]:.3f}<br>Max=%{customdata[2]:.3f}<br>Stdev=%{customdata[3]:.3f}<extra>%{fullData.name}</extra>",
       line: { color: measurementPalette[index % measurementPalette.length] },
     };
-    if (includeErrors) {
+    if (errorMode === "stdev") {
       trace.error_y = {
         type: "data",
         array: values.map((item) => item.stdev || 0),
+        visible: true,
+      };
+    } else if (errorMode === "minmax") {
+      trace.error_y = {
+        type: "data",
+        symmetric: false,
+        array: values.map((item) => Math.max(0, Number(item.max ?? item.mean) - Number(item.mean || 0))),
+        arrayminus: values.map((item) => Math.max(0, Number(item.mean || 0) - Number(item.min ?? item.mean))),
         visible: true,
       };
     }
@@ -172,74 +181,141 @@ function measurementFormatDate(value) {
 }
 
 async function measurementLoadSummary() {
-  const payload = await measurementJson(`/api/measurements/summary?${measurementQuery()}`);
-  const cells = [
-    ["Jobs", measurementFormatNumber(payload.jobs)],
-    ["Measurements", measurementFormatNumber(payload.measurements)],
-    ["Aligned", `${payload.alignment_percentage.toFixed(1)}%`],
-    ["Valid", `${payload.valid_percentage.toFixed(1)}%`],
-    ["Latest data", measurementFormatDate(payload.latest_date)],
-  ];
-  measurementElement("measurementSummaryGrid").innerHTML = cells.map(([label, value]) => `
-    <div class="measurement-summary-cell"><span>${measurementEscape(label)}</span><strong>${measurementEscape(value)}</strong></div>
-  `).join("");
-  const colors = payload.colors.length
-    ? payload.colors.map((item) => `${item.color} (${item.jobs})`).join(", ")
-    : "no colors recorded";
-  const sourceLabel = measurementElement("measurementSource").selectedOptions[0]?.textContent || "All robots";
-  measurementElement("measurementSummaryText").textContent = payload.jobs
-    ? `${sourceLabel} recorded ${measurementFormatNumber(payload.jobs)} jobs from ${measurementFormatDate(payload.first_date)} through ${measurementFormatDate(payload.latest_date)}. The leading colors in this selection are ${colors}. Alignment is ${payload.alignment_percentage.toFixed(1)}% and ${payload.valid_percentage.toFixed(1)}% of deduplicated measurements are valid.`
-    : `No imported measurement data matches the current ${sourceLabel} selection.`;
+  const end = new Date();
+  const start = new Date(end);
+  start.setDate(start.getDate() - 29);
+  const formatInputDate = (value) => {
+    const year = value.getFullYear();
+    const month = String(value.getMonth() + 1).padStart(2, "0");
+    const day = String(value.getDate()).padStart(2, "0");
+    return `${year}-${month}-${day}`;
+  };
+  const sourceValue = measurementElement("measurementSource").value;
+  let scopes;
+  if (sourceValue.startsWith("system:")) {
+    const systemId = Number(sourceValue.slice(7));
+    const system = measurementPage.options.systems.find((item) => item.id === systemId);
+    scopes = [{ label: system?.name || "Selected robot", system_id: systemId }];
+  } else if (sourceValue.startsWith("source:")) {
+    const source = sourceValue.slice(7);
+    scopes = [{ label: source, source }];
+  } else {
+    scopes = [
+      ...measurementPage.options.systems.map((system) => ({ label: system.name, system_id: system.id })),
+      ...measurementPage.options.unmapped_sources.map((source) => ({ label: `${source} (unmapped)`, source })),
+    ];
+  }
+
+  const base = {
+    location: measurementPage.location,
+    start: formatInputDate(start),
+    end: formatInputDate(end),
+    color: measurementElement("measurementColor").value,
+    body: measurementElement("measurementBody").value,
+  };
+  const summaries = await Promise.all(scopes.map(async (scope) => {
+    const parameters = new URLSearchParams(base);
+    if (scope.system_id) parameters.set("system_id", scope.system_id);
+    if (scope.source) parameters.set("source", scope.source);
+    return { scope, payload: await measurementJson(`/api/measurements/summary?${parameters}`) };
+  }));
+
+  const container = measurementElement("measurementSummaryGrid");
+  if (!summaries.length) {
+    container.innerHTML = '<p class="measurement-summary-empty">No robots are configured for this location.</p>';
+    return;
+  }
+  container.innerHTML = summaries.map(({ scope, payload }) => {
+    const cells = [
+      ["Jobs", measurementFormatNumber(payload.jobs)],
+      ["Measurements", measurementFormatNumber(payload.measurements)],
+      ["Aligned", `${payload.alignment_percentage.toFixed(1)}%`],
+      ["Valid", `${payload.valid_percentage.toFixed(1)}%`],
+      ["Latest data", measurementFormatDate(payload.latest_date)],
+    ];
+    return `
+      <article class="measurement-robot-summary">
+        <h4>${measurementEscape(scope.label)}</h4>
+        <div class="measurement-summary-grid">${cells.map(([label, value]) => `
+          <div class="measurement-summary-cell"><span>${measurementEscape(label)}</span><strong>${measurementEscape(value)}</strong></div>
+        `).join("")}</div>
+      </article>
+    `;
+  }).join("");
 }
 
 async function measurementLoadOperation() {
   const payload = await measurementJson(`/api/measurements/operation?${measurementQuery()}`);
-  const jobsLayout = measurementLayout("Jobs per day by color", "Jobs");
+  const jobsLayout = measurementLayout("", "Jobs");
   jobsLayout.barmode = "stack";
-  const countLayout = measurementLayout("Recorded measurements per day", "Measurements");
+  const countLayout = measurementLayout("", "Measurements");
   countLayout.barmode = "stack";
   Plotly.react("measurementJobsChart", measurementGroupedTraces(payload.rows, "jobs"), jobsLayout, measurementPlotConfig);
   Plotly.react("measurementCountChart", measurementGroupedTraces(payload.rows, "measurements"), countLayout, measurementPlotConfig);
 }
 
-function measurementFillThicknessTable(points) {
-  const body = measurementElement("measurementThicknessTable").querySelector("tbody");
-  body.replaceChildren();
-  points.slice(0, 500).forEach((point) => {
-    const row = document.createElement("tr");
-    [point.x, point.series, point.count, point.mean, point.stdev, point.min, point.max].forEach((value, index) => {
-      const cell = document.createElement("td");
-      cell.textContent = typeof value === "number" && index > 2 ? value.toFixed(3) : (value ?? "-");
-      row.append(cell);
-    });
-    body.append(row);
-  });
-}
-
 async function measurementLoadThickness() {
   const view = measurementElement("measurementThicknessView").value;
+  const variation = measurementElement("measurementThicknessVariation").value;
   const payload = await measurementJson(`/api/measurements/metrics/thickness?${measurementQuery({ view })}`);
+  const titles = {
+    car: "Vehicle mean thickness",
+    daily: "Daily mean thickness",
+    weekly: "Weekly mean thickness",
+  };
+  measurementElement("measurementThicknessChartTitle").textContent = titles[view];
+  const layout = measurementLayout("", "Thickness");
+  if (view === "car") {
+    const categories = [...new Set(payload.points.map((point) => point.x))];
+    const step = Math.max(1, Math.ceil(categories.length / 10));
+    const ticks = categories.filter((value, index) => index % step === 0);
+    if (categories.length && ticks.at(-1) !== categories.at(-1)) ticks.push(categories.at(-1));
+    layout.xaxis = {
+      ...layout.xaxis,
+      type: "category",
+      tickmode: "array",
+      tickvals: ticks,
+      ticktext: ticks.map((value) => value.split(" / ")[1] || value),
+    };
+  }
   Plotly.react(
     "measurementThicknessChart",
-    measurementPointTraces(payload.points, "mean", true),
-    measurementLayout(`${view === "car" ? "Car" : "Daily"} mean thickness`, "Thickness"),
+    measurementPointTraces(payload.points, "mean", variation),
+    layout,
     measurementPlotConfig,
   );
-  measurementFillThicknessTable(payload.points);
+}
+
+function measurementRenderPerformance() {
+  const rows = measurementPage.performanceRows;
+  const isPercentage = measurementPage.performanceMode === "percentage";
+  const title = isPercentage
+    ? "Alignment and valid measurement rates"
+    : "Valid measurements per day";
+  measurementElement("measurementPerformanceChartTitle").textContent = title;
+
+  let traces;
+  let layout;
+  if (isPercentage) {
+    traces = [
+      { type: "scatter", mode: "lines+markers", name: "Aligned %", x: rows.map((row) => row.date), y: rows.map((row) => row.alignment_percentage), line: { color: measurementPalette[0] } },
+      { type: "scatter", mode: "lines+markers", name: "Valid %", x: rows.map((row) => row.date), y: rows.map((row) => row.valid_percentage), line: { color: measurementPalette[1] } },
+    ];
+    layout = measurementLayout("", "Percent");
+    layout.yaxis = { ...layout.yaxis, range: [0, 100], rangemode: undefined };
+  } else {
+    traces = [
+      { type: "bar", name: "Valid measurements", x: rows.map((row) => row.date), y: rows.map((row) => row.valid_count), marker: { color: measurementPalette[0] } },
+    ];
+    layout = measurementLayout("", "Valid measurements");
+  }
+  Plotly.react("measurementPerformanceChart", traces, layout, measurementPlotConfig);
 }
 
 async function measurementLoadPerformance() {
   const payload = await measurementJson(`/api/measurements/performance?${measurementQuery()}`);
-  const rows = payload.rows;
-  const percentageLayout = measurementLayout("Alignment and valid measurement rates", "Percent");
-  percentageLayout.yaxis = { title: "Percent", range: [0, 100], gridcolor: "#e8edef" };
-  Plotly.react("measurementRateChart", [
-    { type: "scatter", mode: "lines+markers", name: "Aligned %", x: rows.map((row) => row.date), y: rows.map((row) => row.alignment_percentage), line: { color: measurementPalette[0] } },
-    { type: "scatter", mode: "lines+markers", name: "Valid %", x: rows.map((row) => row.date), y: rows.map((row) => row.valid_percentage), line: { color: measurementPalette[1] } },
-  ], percentageLayout, measurementPlotConfig);
-  Plotly.react("measurementValidChart", [
-    { type: "bar", name: "Valid measurements", x: rows.map((row) => row.date), y: rows.map((row) => row.valid_count), marker: { color: measurementPalette[0] } },
-  ], measurementLayout("Valid measurements per day", "Valid measurements"), measurementPlotConfig);
+  measurementPage.performanceRows = payload.rows;
+  measurementRenderPerformance();
 }
 
 async function measurementLoadMisc() {
@@ -253,7 +329,7 @@ async function measurementLoadMisc() {
   const payload = await measurementJson(`/api/measurements/metrics/misc?${measurementQuery({ view, metric })}`);
   Plotly.react(
     "measurementMiscChart",
-    measurementPointTraces(payload.points, statistic, statistic === "mean"),
+    measurementPointTraces(payload.points, statistic, statistic === "mean" ? "stdev" : ""),
     measurementLayout(`${metric.replaceAll("_", " ")} / ${statistic}`, statistic),
     measurementPlotConfig,
   );
@@ -288,7 +364,6 @@ async function measurementLoadOptions() {
   }
   measurementFillSources(data);
   measurementFillSelect(measurementElement("measurementColor"), data.colors);
-  measurementFillSelect(measurementElement("measurementCar"), data.cars);
   measurementFillSelect(measurementElement("measurementBody"), data.bodies);
   measurementFillSelect(measurementElement("measurementMiscMetric"), data.misc_metrics, "Choose metric");
   measurementUpdateMappingWarning();
@@ -322,6 +397,18 @@ measurementElement("applyMeasurementFilters").addEventListener("click", () => {
 });
 measurementElement("measurementSource").addEventListener("change", measurementUpdateMappingWarning);
 measurementElement("measurementThicknessView").addEventListener("change", () => measurementLoadThickness().catch(measurementShowError));
+measurementElement("measurementThicknessVariation").addEventListener("change", () => measurementLoadThickness().catch(measurementShowError));
+document.querySelectorAll("[data-performance-mode]").forEach((button) => {
+  button.addEventListener("click", () => {
+    measurementPage.performanceMode = button.dataset.performanceMode;
+    document.querySelectorAll("[data-performance-mode]").forEach((item) => {
+      const active = item === button;
+      item.classList.toggle("active", active);
+      item.setAttribute("aria-pressed", String(active));
+    });
+    measurementRenderPerformance();
+  });
+});
 measurementElement("measurementMiscMetric").addEventListener("change", () => measurementLoadMisc().catch(measurementShowError));
 measurementElement("measurementMiscView").addEventListener("change", () => measurementLoadMisc().catch(measurementShowError));
 measurementElement("measurementMiscStat").addEventListener("change", () => measurementLoadMisc().catch(measurementShowError));

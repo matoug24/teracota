@@ -228,10 +228,12 @@ def init_db():
             system_id INTEGER NOT NULL,
             status TEXT NOT NULL,
             started_at TEXT NOT NULL,
+            note TEXT NOT NULL DEFAULT '',
             FOREIGN KEY (system_id) REFERENCES systems (id)
         )
         """
     )
+    ensure_column("system_status_history", "note", "TEXT NOT NULL DEFAULT ''")
     execute(
         """
         CREATE TABLE IF NOT EXISTS system_updates (
@@ -595,6 +597,7 @@ def record_page_visit():
         "admin_page",
         "logs_page",
         "statistics_page",
+        "open_issues_page",
         "measurements.location_history",
         "measurements.system_history",
     }
@@ -916,19 +919,19 @@ def backfill_status_history():
         )
         started_at = first_activity["first_date"] if first_activity and first_activity["first_date"] else today_iso()
         execute(
-            "INSERT INTO system_status_history (system_id, status, started_at) VALUES (?, ?, ?)",
+            "INSERT INTO system_status_history (system_id, status, started_at, note) VALUES (?, ?, ?, '')",
             (system["id"], system["status"], started_at),
         )
 
 
-def set_system_status(system_id, status, started_at):
+def set_system_status(system_id, status, started_at, note=""):
     current = query_one("SELECT status FROM systems WHERE id = ?", (system_id,))
     if not current or current["status"] == status:
         return
     execute("UPDATE systems SET status = ? WHERE id = ?", (status, system_id))
     execute(
-        "INSERT INTO system_status_history (system_id, status, started_at) VALUES (?, ?, ?)",
-        (system_id, status, clean(started_at, today_iso())),
+        "INSERT INTO system_status_history (system_id, status, started_at, note) VALUES (?, ?, ?, ?)",
+        (system_id, status, clean(started_at, today_iso()), clean(note)),
     )
 
 
@@ -975,6 +978,11 @@ def logs_page():
 @app.route("/statistics")
 def statistics_page():
     return render_page("statistics")
+
+
+@app.route("/issues")
+def open_issues_page():
+    return render_page("issues")
 
 
 @app.route("/login", methods=["GET", "POST"])
@@ -1210,11 +1218,12 @@ def create_system():
         ),
     )
     execute(
-        "INSERT INTO system_status_history (system_id, status, started_at) VALUES (?, ?, ?)",
+        "INSERT INTO system_status_history (system_id, status, started_at, note) VALUES (?, ?, ?, ?)",
         (
             cursor.lastrowid,
             clean(payload.get("status"), "Operational"),
             clean(payload.get("status_start"), today_iso()),
+            clean(payload.get("status_note")),
         ),
     )
     sync_locations()
@@ -1254,7 +1263,7 @@ def update_system(system_id):
             system_id,
         ),
     )
-    set_system_status(system_id, new_status, payload.get("status_start"))
+    set_system_status(system_id, new_status, payload.get("status_start"), payload.get("status_note"))
     sync_locations()
     return jsonify(load_state())
 
@@ -1306,10 +1315,11 @@ def update_status_history(history_id):
     if not history:
         abort(404)
     execute(
-        "UPDATE system_status_history SET status = ?, started_at = ? WHERE id = ?",
+        "UPDATE system_status_history SET status = ?, started_at = ?, note = ? WHERE id = ?",
         (
             clean_system_status(payload.get("status")),
             clean(payload.get("started_at"), today_iso()),
+            clean(payload.get("note")),
             history_id,
         ),
     )

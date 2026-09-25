@@ -148,7 +148,8 @@ install -o root -g root -m 0644 "${IMPORT_SERVICE_SOURCE}" "${IMPORT_SERVICE_TAR
 install -o root -g root -m 0644 "${IMPORT_TIMER_SOURCE}" "${IMPORT_TIMER_TARGET}"
 systemctl daemon-reload
 systemctl enable teracota >/dev/null
-systemctl enable --now teracota-measurement-import.timer >/dev/null
+systemctl enable teracota-measurement-import.timer >/dev/null
+systemctl restart teracota-measurement-import.timer
 
 log "Checking the live Nginx configuration"
 nginx_backup="${BACKUP_DIR}/nginx-before-update-${stamp}.conf"
@@ -185,7 +186,9 @@ systemctl restart teracota
 
 healthy=0
 for _ in {1..20}; do
-    if curl --fail --silent --show-error "${HEALTH_URL}" >/dev/null; then
+    # A connection refusal is expected briefly while Gunicorn binds its port.
+    # Keep retries quiet; the failure path below prints the service journal.
+    if curl --fail --silent --max-time 3 "${HEALTH_URL}" >/dev/null 2>&1; then
         healthy=1
         break
     fi

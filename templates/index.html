@@ -4,8 +4,8 @@
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <title>TeraCota 2000 Automotive Operations Tracker</title>
-    <link id="themeStylesheet" rel="stylesheet" href="/assets/{{ theme_css }}?v=20260920-structure" />
-    <link rel="stylesheet" href="/assets/measurements/admin.css?v=20260920-structure" />
+    <link id="themeStylesheet" rel="stylesheet" href="/assets/{{ theme_css }}?v=20260923-issues" />
+    <link rel="stylesheet" href="/assets/measurements/admin.css?v=20260923-issues" />
   </head>
   <body data-page="{{ initial_page }}" data-system-id="{{ initial_system_id }}" data-location="{{ initial_location }}">
     <div class="app-shell">
@@ -19,16 +19,16 @@
         </div>
 
         <nav class="nav-tabs" aria-label="Main views">
-          <button class="nav-tab nav-tab-primary active" type="button" data-view="systems">Systems</button>
+          <button class="nav-tab nav-tab-primary {{ 'active' if initial_page in ('home', 'system', 'location', 'issues') else '' }}" type="button" data-view="systems">Systems</button>
           <button class="nav-tab" type="button" data-view="development">Development</button>
-          <button class="nav-tab" type="button" data-view="statistics">Statistics</button>
+          <button class="nav-tab {{ 'active' if initial_page == 'statistics' else '' }}" type="button" data-view="statistics">Statistics</button>
         </nav>
 
         <div class="auth-area" id="authArea"></div>
       </header>
 
       <main class="main">
-        <section class="dashboard" id="systemsView" aria-labelledby="dashboardTitle">
+        <section class="dashboard {{ 'hidden' if initial_page != 'home' else '' }}" id="systemsView" aria-labelledby="dashboardTitle">
           <div class="section-header">
             <div>
               <p class="eyebrow">Operations timeline</p>
@@ -57,11 +57,12 @@
           <div class="task-columns" id="taskColumns"></div>
         </section>
 
-        <section class="system-detail-page hidden" id="systemDetailPage" aria-live="polite"></section>
-        <section class="location-detail-page hidden" id="locationDetailPage" aria-live="polite"></section>
-        <section class="admin-page hidden" id="adminPage" aria-live="polite"></section>
-        <section class="logs-page hidden" id="logsPage" aria-live="polite"></section>
-        <section class="statistics-page hidden" id="statisticsPage" aria-live="polite"></section>
+        <section class="system-detail-page {{ 'hidden' if initial_page != 'system' else '' }}" id="systemDetailPage" aria-live="polite"></section>
+        <section class="location-detail-page {{ 'hidden' if initial_page != 'location' else '' }}" id="locationDetailPage" aria-live="polite"></section>
+        <section class="admin-page {{ 'hidden' if initial_page != 'admin' else '' }}" id="adminPage" aria-live="polite"></section>
+        <section class="logs-page {{ 'hidden' if initial_page != 'logs' else '' }}" id="logsPage" aria-live="polite"></section>
+        <section class="statistics-page {{ 'hidden' if initial_page != 'statistics' else '' }}" id="statisticsPage" aria-live="polite"></section>
+        <section class="open-issues-page {{ 'hidden' if initial_page != 'issues' else '' }}" id="openIssuesPage" aria-live="polite"></section>
       </main>
     </div>
 
@@ -87,7 +88,7 @@
       <div class="dialog-detail" id="detailDialogContent"></div>
     </dialog>
 
-    <script src="/assets/measurements/admin.js?v=20260920-structure"></script>
-    <script src="/assets/js/app.js?v=20260920-structure"></script>
+    <script src="/assets/measurements/admin.js?v=20260923-issues"></script>
+    <script src="/assets/js/app.js?v=20260923-issues"></script>
   </body>
 </html>

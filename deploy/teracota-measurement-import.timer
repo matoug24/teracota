@@ -1,9 +1,8 @@
 [Unit]
-Description=Import new TeraCota measurement summaries every 15 minutes
+Description=Import new TeraCota measurement summaries daily at 04:00 America/Toronto
 
 [Timer]
-OnBootSec=5min
-OnUnitActiveSec=15min
+OnCalendar=*-*-* 04:00:00 America/Toronto
 Persistent=true
 Unit=teracota-measurement-import.service
 

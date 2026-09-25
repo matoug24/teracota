@@ -13,7 +13,7 @@ Production result folders
   -> Windows measurement uploader
   -> HTTPS upload API
   -> private Lightsail filesystem or S3 object storage
-  -> 15-minute measurement import timer
+  -> daily 4:00 AM America/Toronto measurement import timer
   -> compact measurement summary database
   -> Measurement History page
 ```
@@ -146,7 +146,7 @@ imported jobs by client and filename.
 Open PowerShell as Administrator:
 
 ```powershell
-$Python = "C:\Program Files\Teraview\teracota_results_env_py3\python.exe"
+$Python = "C:\Program Files\Teraview\teracota_env_py3\python.exe"
 $Folder = "C:\ProgramData\TeraView\MeasurementUploader"
 $Config = "$Folder\uploader_config.json"
 
@@ -246,8 +246,9 @@ engineering config only as a recovery tool, with no scheduled task.
 
 ## 8. Trigger and verify the server import
 
-The timer imports verified batches every 15 minutes. To process a test batch
-immediately, run on Lightsail:
+The timer imports verified batches once per day at 4:00 AM America/Toronto,
+leaving three hours after the production uploader's 1:00 AM schedule. To
+process a test batch or a daytime manual upload immediately, run on Lightsail:
 
 ```bash
 sudo systemctl start teracota-measurement-import.service
@@ -277,7 +278,7 @@ Then verify in the website:
 
 1. Open the location page and select **Measurement History**.
 2. Confirm jobs and measurements are greater than zero.
-3. Confirm expected sources, colors, Car IDs, and Body IDs appear.
+3. Confirm expected robot sources, colors, and Body IDs appear.
 4. Open one system and confirm its view includes only mapped source aliases.
 5. Review Operation Summary, Thickness, System Performance, and Miscellaneous Data.
 
@@ -295,6 +296,8 @@ Set-ExecutionPolicy -Scope Process Bypass
 
 The installer runs the doctor before creating the task. The task starts missed
 runs when the computer becomes available and prevents overlapping instances.
+It uses `pythonw.exe` when available so no console window appears, and registers
+the current Windows user at the highest run level.
 
 Verify it:
 
@@ -302,12 +305,36 @@ Verify it:
 Get-ScheduledTask -TaskName "TeraCota Measurement Upload"
 Get-ScheduledTaskInfo -TaskName "TeraCota Measurement Upload"
 Start-ScheduledTask -TaskName "TeraCota Measurement Upload"
-Start-Sleep -Seconds 5
+Start-Sleep -Seconds 45
 Get-Content "C:\ProgramData\TeraView\MeasurementUploader\uploader.log" -Tail 100
 ```
 
 The task runs under the Windows account that installs it. That account needs
-read access to the data directory and write access to the uploader folder.
+read access to the data directory and write access to the uploader folder. The
+account must remain signed in because the task uses Interactive logon; locking
+the screen is acceptable.
+
+Change the task to one new daily time:
+
+```powershell
+$Trigger = New-ScheduledTaskTrigger -Daily -At "02:00"
+Set-ScheduledTask -TaskName "TeraCota Measurement Upload" -Trigger $Trigger
+```
+
+Add another daily time while preserving existing triggers:
+
+```powershell
+$Task = Get-ScheduledTask -TaskName "TeraCota Measurement Upload"
+$Triggers = @($Task.Triggers)
+$Triggers += New-ScheduledTaskTrigger -Daily -At "13:00"
+Set-ScheduledTask -TaskName "TeraCota Measurement Upload" -Trigger $Triggers
+```
+
+Remove only the scheduled task, without deleting uploader or server data:
+
+```powershell
+Unregister-ScheduledTask -TaskName "TeraCota Measurement Upload"
+```
 
 ## 10. Location rename procedure
 

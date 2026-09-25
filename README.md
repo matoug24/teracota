@@ -11,9 +11,9 @@ be accessed.
 ## What the application tracks
 
 - Systems grouped and ranked by location
-- Operational status history and timeline events
+- Operational status history, event notes, and timeline tooltips
 - Shared site visits across systems at one location
-- Issues shared by one or more systems
+- Issues shared by one or more systems, with a fleet-wide open-issue register
 - Calibration and software updates
 - Development ideas and tasks
 - Deleted issue and visit recovery from the admin page
@@ -147,6 +147,7 @@ real uploader configuration are excluded by `.gitignore`.
 | `/` | Systems dashboard |
 | `/systems/<id>` | System details |
 | `/locations/<name>` | Location overview |
+| `/issues` | Open issues across all locations and systems |
 | `/measurements/system/<id>` | Measurement History filtered to one system |
 | `/measurements/location/<name>` | Measurement History for all systems at a location |
 | `/admin` | System administration, ordering, recovery, export, and measurement configuration |
@@ -163,7 +164,8 @@ decision changes. They are intentionally accessed by route.
 2. Configure filename parsing and robot source aliases in `/admin`.
 3. Run the Windows uploader on the production data computer.
 4. The uploader sends stable CSV files through the token-protected upload API.
-5. The Lightsail timer runs `python -m measurements.importer` every 15 minutes.
+5. The Lightsail timer runs `python -m measurements.importer` daily at 4:00 AM
+   America/Toronto, after the production upload scheduled for 1:00 AM.
 6. The importer stores compact summaries in the analytics database.
 7. Users open Measurement History from a system or location page.
 
@@ -177,7 +179,7 @@ Full instructions are in `docs/MEASUREMENT_UPLOAD_GUIDE.md`.
 From the project root with the virtual environment active:
 
 ```powershell
-python -m unittest tests.test_measurements -v
+python -m unittest tests.test_uploader tests.test_measurements -v
 python -m compileall -q app.py wsgi.py gunicorn.conf.py measurements measurement_uploader tests
 node --check static\js\app.js
 node --check measurements\static\admin.js

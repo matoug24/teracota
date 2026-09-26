@@ -493,7 +493,10 @@ Operational changes are committed to SQLite first and placed in a durable
 outbox. The dispatcher checks that outbox every minute. Delivery failure does
 not block a visit, issue, update, or system edit; the message is retried with
 increasing delays. The daily timer runs at 5:00 AM America/Toronto and queues a
-summary for the previous calendar day. `Persistent=true` means a summary missed
+measurement summary for the previous calendar day. Each robot is listed with
+its job count, total raw measurements, alignment percentage, and valid-measurement
+percentage. These values use the same source mappings and definitions as
+Measurement History. `Persistent=true` means a summary missed
 while the instance was off is run after the next boot. Each location/date pair
 is queued only once.
 
@@ -505,7 +508,7 @@ sudo systemctl status teracota-email-dispatch.service --no-pager
 sudo journalctl -u teracota-email-dispatch.service -n 50 --no-pager
 ```
 
-Test the previous-day summary manually:
+Test the previous-day measurement summary manually:
 
 ```bash
 sudo systemctl start teracota-daily-email.service

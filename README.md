@@ -20,7 +20,7 @@ be accessed.
 - Visitor logs for authenticated sessions
 - Server health with failed measurement-import details and retry queuing in the admin page
 - Visitor records and the rotating Flask application log under separate `/logs` tabs
-- Per-location update emails and 5:00 AM previous-day operations summaries
+- Per-location update emails and 5:00 AM previous-day measurement summaries by robot
 - Operational statistics
 - Measurement summaries imported from production CSV files
 - Source aliases that map one or more raw robot names to a TeraCota system
@@ -31,7 +31,8 @@ be accessed.
 | --- | --- |
 | `app.py` | Main Flask application, operations APIs, authentication, and schema initialization |
 | `server_monitoring.py` | Server metrics, failed-import diagnostics, retry queuing, rotating logs, and monitoring APIs |
-| `email_notifications.py` | Durable email outbox, Gmail SMTP delivery, daily summaries, and admin APIs |
+| `email_notifications.py` | Durable email outbox, Gmail SMTP delivery, notification settings, and admin APIs |
+| `measurements/daily_summary.py` | Per-robot daily measurement metrics used by notification emails |
 | `wsgi.py` | Gunicorn production entry point; initializes the databases before serving |
 | `templates/` | Main application and login templates |
 | `static/` | Main application JavaScript and CSS themes |

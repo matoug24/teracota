@@ -271,6 +271,36 @@ class MeasurementIntegrationTests(unittest.TestCase):
 
         systems = app_module.query_all("SELECT id,name FROM systems ORDER BY id")
         robot_one = next(system for system in systems if system["name"] == "Robot 1")
+        save_source_mapping("Client Plant", robot_one["id"], "Robot_1_SN101")
+        replace_job_summary(
+            {
+                "client": "Client Plant",
+                "car_id": "daily-test-car",
+                "body_id": "daily-test-body",
+                "job_date": "2026-09-24",
+                "job_time": "23:30:00",
+                "color": "Test",
+                "layer_count": 0,
+                "scopes": [
+                    {
+                        "source": "Robot_1_SN101",
+                        "raw_count": 100,
+                        "deduplicated_count": 80,
+                        "aligned_count": 90,
+                        "valid_count": 72,
+                        "alignment_percentage": 90.0,
+                        "valid_percentage": 90.0,
+                        "metrics": {},
+                    }
+                ],
+            },
+            {
+                "filename": "daily-summary-test.csv",
+                "object_key": "tests/daily-summary-test.csv",
+                "sha256": "b" * 64,
+                "size_bytes": 100,
+            },
+        )
         visit = self.client.post(
             "/api/site-visits",
             json={
@@ -295,8 +325,13 @@ class MeasurementIntegrationTests(unittest.TestCase):
         daily = app_module.query_one(
             "SELECT * FROM email_outbox WHERE notification_type='DAILY' ORDER BY id DESC LIMIT 1"
         )
-        self.assertIn("Daily summary for 2026-09-24", daily["subject"])
-        self.assertIn("Site visits (1)", daily["body_text"])
+        self.assertIn("Daily measurement summary for 2026-09-24", daily["subject"])
+        self.assertIn("Robot 1", daily["body_text"])
+        self.assertIn("Jobs: 1", daily["body_text"])
+        self.assertIn("Total measurements: 100", daily["body_text"])
+        self.assertIn("Alignment: 90.0%", daily["body_text"])
+        self.assertIn("Valid measurements: 90.0%", daily["body_text"])
+        self.assertNotIn("Site visits", daily["body_text"])
 
         sent_messages = []
 
@@ -321,7 +356,7 @@ class MeasurementIntegrationTests(unittest.TestCase):
         self.assertEqual((sent, failed), (2, 0))
         self.assertEqual(len(sent_messages), 2)
         recipients_by_subject = {
-            "daily" if "Daily summary" in message["Subject"] else "update": message["To"]
+            "daily" if "Daily measurement summary" in message["Subject"] else "update": message["To"]
             for message in sent_messages
         }
         self.assertEqual(recipients_by_subject["update"], "team@example.com")

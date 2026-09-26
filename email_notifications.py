@@ -1,4 +1,4 @@
-"""Durable per-location email notifications and daily operations summaries."""
+"""Durable per-location email notifications and daily measurement summaries."""
 
 from __future__ import annotations
 
@@ -17,6 +17,8 @@ from urllib.parse import quote
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from flask import Blueprint, abort, jsonify, request
+
+from measurements.daily_summary import robot_daily_metrics
 
 
 EMAIL_PATTERN = re.compile(r"^[^\s@]+@[^\s@]+\.[^\s@]+$")
@@ -390,116 +392,44 @@ def queue_update_notification(
         )
 
 
-def _daily_summary_body(connection: sqlite3.Connection, location: str, summary_date: str) -> str:
-    visits = connection.execute(
-        """
-        SELECT sv.id,sv.date,sv.engineer,
-               GROUP_CONCAT(DISTINCT s.name) AS systems,
-               GROUP_CONCAT(DISTINCT NULLIF(m.type,'')) AS purposes,
-               GROUP_CONCAT(DISTINCT NULLIF(m.summary,'')) AS summaries
-        FROM site_visits sv
-        LEFT JOIN maintenance_records m ON m.visit_id=sv.id
-        LEFT JOIN systems s ON s.id=m.system_id
-        WHERE sv.location=? AND sv.date=?
-        GROUP BY sv.id ORDER BY sv.id
-        """,
-        (location, summary_date),
-    ).fetchall()
-    opened = connection.execute(
-        """
-        SELECT i.id,i.title,i.severity,i.status,i.reported_by,
-               GROUP_CONCAT(DISTINCT s.name) AS systems
-        FROM system_issues i
-        JOIN system_issue_links l ON l.issue_id=i.id
-        JOIN systems s ON s.id=l.system_id
-        WHERE s.location=? AND i.opened=?
-        GROUP BY i.id ORDER BY i.id
-        """,
-        (location, summary_date),
-    ).fetchall()
-    closed = connection.execute(
-        """
-        SELECT i.id,i.title,i.severity,i.reported_by,
-               GROUP_CONCAT(DISTINCT s.name) AS systems
-        FROM system_issues i
-        JOIN system_issue_links l ON l.issue_id=i.id
-        JOIN systems s ON s.id=l.system_id
-        WHERE s.location=? AND i.closed_date=?
-        GROUP BY i.id ORDER BY i.id
-        """,
-        (location, summary_date),
-    ).fetchall()
-    updates = connection.execute(
-        """
-        SELECT u.date,u.update_type,u.reported_by,u.notes,s.name AS system_name
-        FROM system_updates u JOIN systems s ON s.id=u.system_id
-        WHERE s.location=? AND u.date=? ORDER BY u.id
-        """,
-        (location, summary_date),
-    ).fetchall()
-    status_changes = connection.execute(
-        """
-        SELECT h.status,h.note,s.name AS system_name
-        FROM system_status_history h JOIN systems s ON s.id=h.system_id
-        WHERE s.location=? AND h.started_at=? ORDER BY h.id
-        """,
-        (location, summary_date),
-    ).fetchall()
-
+def _daily_summary_body(
+    database_path: str | Path,
+    location: str,
+    summary_date: str,
+) -> str:
+    robots = robot_daily_metrics(database_path, location, summary_date)
     lines = [
-        "TeraCota 2000 daily operations summary",
+        "TeraCota 2000 daily measurement summary",
         "",
         f"Location: {location}",
         f"Date: {summary_date}",
-        "",
-        f"Site visits ({len(visits)})",
     ]
-    lines.extend(
-        f"- {row['engineer']} | {row['systems'] or 'No system'} | "
-        f"{row['purposes'] or 'Purpose not specified'} | {row['summaries'] or 'No summary'}"
-        for row in visits
-    )
-    if not visits:
-        lines.append("- None")
-
-    lines.extend(["", f"Issues opened ({len(opened)})"])
-    lines.extend(
-        f"- {row['title']} ({row['severity']}, {row['status']}) | {row['systems']} | "
-        f"reported by {row['reported_by'] or 'Unknown'}"
-        for row in opened
-    )
-    if not opened:
-        lines.append("- None")
-
-    lines.extend(["", f"Issues closed ({len(closed)})"])
-    lines.extend(
-        f"- {row['title']} ({row['severity']}) | {row['systems']}"
-        for row in closed
-    )
-    if not closed:
-        lines.append("- None")
-
-    lines.extend(["", f"System updates ({len(updates)})"])
-    lines.extend(
-        f"- {row['system_name']} | {row['update_type']} | "
-        f"reported by {row['reported_by'] or 'Unknown'} | {row['notes'] or 'No notes'}"
-        for row in updates
-    )
-    if not updates:
-        lines.append("- None")
-
-    lines.extend(["", f"Status changes ({len(status_changes)})"])
-    lines.extend(
-        f"- {row['system_name']} -> {row['status']} | {row['note'] or 'No note'}"
-        for row in status_changes
-    )
-    if not status_changes:
-        lines.append("- None")
+    for robot in robots:
+        lines.extend(
+            [
+                "",
+                robot["system_name"],
+                f"Jobs: {robot['jobs']:,}",
+                f"Total measurements: {robot['measurements']:,}",
+                f"Alignment: {robot['alignment_percentage']:.1f}%",
+                f"Valid measurements: {robot['valid_percentage']:.1f}%",
+            ]
+        )
+        if not robot["source_aliases"]:
+            lines.append("Measurement source: Not configured")
+    if not robots:
+        lines.extend(["", "No systems are configured for this location."])
 
     base_url = os.environ.get(
         "TERACOTA_PUBLIC_URL", "https://teracota.matoug.com"
     ).rstrip("/")
-    lines.extend(["", f"Open TeraCota: {base_url}/locations/{quote(location, safe='')}"])
+    lines.extend(
+        [
+            "",
+            f"Open Measurement History: {base_url}/measurements/location/"
+            f"{quote(location, safe='')}",
+        ]
+    )
     return "\n".join(lines)
 
 
@@ -536,13 +466,13 @@ def queue_daily_summaries(database_path: str | Path, summary_date: date | None =
             ).fetchone()
             if existing:
                 continue
-            body = _daily_summary_body(connection, setting["location"], date_text)
+            body = _daily_summary_body(database_path, setting["location"], date_text)
             _queue_message(
                 connection,
                 setting["location"],
                 "DAILY",
                 recipients,
-                f"[TeraCota] {setting['location']} - Daily summary for {date_text}",
+                f"[TeraCota] {setting['location']} - Daily measurement summary for {date_text}",
                 body,
             )
             connection.execute(

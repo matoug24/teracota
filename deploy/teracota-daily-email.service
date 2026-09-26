@@ -1,5 +1,5 @@
 [Unit]
-Description=Queue the previous-day TeraCota operations summary
+Description=Queue the previous-day TeraCota measurement summary
 After=network-online.target teracota.service
 Wants=network-online.target
 

@@ -58,3 +58,33 @@ def robot_daily_metrics(
             }
         )
     return result
+
+
+def robot_metrics_for_dates(
+    operations_database: str | Path,
+    location: str,
+    summary_dates: list[str],
+) -> list[dict]:
+    """Return one ordered metric row per requested date for every robot."""
+    robots_by_id: dict[int, dict] = {}
+    for summary_date in summary_dates:
+        for robot in robot_daily_metrics(operations_database, location, summary_date):
+            entry = robots_by_id.setdefault(
+                robot["system_id"],
+                {
+                    "system_id": robot["system_id"],
+                    "system_name": robot["system_name"],
+                    "source_aliases": robot["source_aliases"],
+                    "days": [],
+                },
+            )
+            entry["days"].append(
+                {
+                    "date": summary_date,
+                    "jobs": robot["jobs"],
+                    "measurements": robot["measurements"],
+                    "alignment_percentage": robot["alignment_percentage"],
+                    "valid_percentage": robot["valid_percentage"],
+                }
+            )
+    return sorted(robots_by_id.values(), key=lambda item: item["system_name"].casefold())

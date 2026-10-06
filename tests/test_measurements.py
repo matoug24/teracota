@@ -33,10 +33,14 @@ os.environ.update(
 )
 
 import app as app_module  # noqa: E402
-from email_notifications import deliver_pending, queue_daily_summaries  # noqa: E402
+from email_notifications import (  # noqa: E402
+    deliver_pending,
+    queue_daily_summaries,
+    queue_health_warning,
+)
 from measurements.config import save_source_mapping, source_mappings  # noqa: E402
 from measurements.database import ANALYTICS_DB, UPLOAD_DB, connect, replace_job_summary  # noqa: E402
-from measurements.queries import options  # noqa: E402
+from measurements.queries import jobs_by_color_last_30_days, metric_series, options  # noqa: E402
 from measurements.settings import OBJECT_CACHE_DIR  # noqa: E402
 from measurements.storage import sha256_path  # noqa: E402
 from measurements.summarizer import summarize_csv  # noqa: E402
@@ -327,10 +331,11 @@ class MeasurementIntegrationTests(unittest.TestCase):
         )
         self.assertIn("Daily measurement summary for 2026-09-24", daily["subject"])
         self.assertIn("Robot 1", daily["body_text"])
-        self.assertIn("Jobs: 1", daily["body_text"])
-        self.assertIn("Total measurements: 100", daily["body_text"])
-        self.assertIn("Alignment: 90.0%", daily["body_text"])
-        self.assertIn("Valid measurements: 90.0%", daily["body_text"])
+        self.assertIn("Comparison: Sep 22, 2026 to Sep 24, 2026", daily["body_text"])
+        self.assertIn("2026-09-24 | 1 | 100 | 90.0% | 90.0%", daily["body_text"])
+        self.assertIn("2026-09-23 | 0 | 0 | 0.0% | 0.0%", daily["body_text"])
+        self.assertIn("<table", daily["body_html"])
+        self.assertIn("Robot 1", daily["body_html"])
         self.assertNotIn("Site visits", daily["body_text"])
 
         sent_messages = []
@@ -361,8 +366,53 @@ class MeasurementIntegrationTests(unittest.TestCase):
         }
         self.assertEqual(recipients_by_subject["update"], "team@example.com")
         self.assertEqual(recipients_by_subject["daily"], "second@example.com")
+        self.assertTrue(all(message.is_multipart() for message in sent_messages))
         statuses = app_module.query_all("SELECT DISTINCT status FROM email_outbox")
         self.assertEqual(statuses, [{"status": "SENT"}])
+
+    def test_health_warning_email_is_deduplicated_and_recovers(self):
+        app_module.execute(
+            """
+            INSERT INTO notification_settings(
+                location,recipients,update_notifications,daily_summary,updated_at
+            ) VALUES('Client Plant','[{"email":"alerts@example.com","update_notifications":true,"daily_summary":false}]',1,0,'2026-10-06T00:00:00Z')
+            ON CONFLICT(location) DO UPDATE SET recipients=excluded.recipients,
+                update_notifications=1,daily_summary=0,updated_at=excluded.updated_at
+            """
+        )
+        high_health = {
+            "memory": {"used_percent": 91, "swap_used_percent": 10},
+            "cpu": {"load_1m": 0.5, "logical_processors": 2},
+            "disk": {
+                "root": {"used_percent": 30},
+                "measurement": {"used_percent": 30},
+            },
+            "measurements": {"failed_batches": 0},
+        }
+        healthy = {
+            **high_health,
+            "memory": {"used_percent": 40, "swap_used_percent": 5},
+        }
+        with patch("server_monitoring.collect_server_health", return_value=high_health):
+            self.assertEqual(queue_health_warning(MAIN_DB), 1)
+            self.assertEqual(queue_health_warning(MAIN_DB), 0)
+        warning = app_module.query_one(
+            "SELECT * FROM email_outbox WHERE notification_type='HEALTH' ORDER BY id DESC LIMIT 1"
+        )
+        self.assertIn("Server health warning", warning["subject"])
+        self.assertIn("Memory usage is 91.0%", warning["body_text"])
+        with patch("server_monitoring.collect_server_health", return_value=healthy):
+            self.assertEqual(queue_health_warning(MAIN_DB), 1)
+        recovery = app_module.query_one(
+            "SELECT * FROM email_outbox WHERE notification_type='HEALTH' ORDER BY id DESC LIMIT 1"
+        )
+        self.assertIn("recovered", recovery["subject"])
+
+    def test_jobs_by_color_uses_all_robot_sources(self):
+        payload = jobs_by_color_last_30_days("Client Plant", date(2026, 9, 24))
+        self.assertEqual(payload["start"], "2026-08-26")
+        self.assertEqual(payload["end"], "2026-09-24")
+        self.assertEqual(payload["rows"], [{"color": "Test", "jobs": 1}])
 
     def test_multiple_source_aliases_can_map_to_one_system(self):
         systems = app_module.query_all("SELECT id,name FROM systems ORDER BY id")
@@ -410,6 +460,61 @@ class MeasurementIntegrationTests(unittest.TestCase):
             if item["id"] == entry["id"]
         )
         self.assertEqual(updated["note"], "Verified after scheduled inspection")
+
+    def test_thickness_combines_matching_layer_names_across_layer_counts(self):
+        replace_job_summary(
+            {
+                "client": "Client Plant",
+                "car_id": "layer-test-car",
+                "body_id": "layer-test-body",
+                "job_date": "2026-03-23",
+                "job_time": "02:00:00",
+                "color": "Layer Test",
+                "layer_count": 4,
+                "scopes": [
+                    {
+                        "source": "Robot_2_SN203",
+                        "raw_count": 10,
+                        "deduplicated_count": 10,
+                        "aligned_count": 10,
+                        "valid_count": 10,
+                        "alignment_percentage": 100.0,
+                        "valid_percentage": 100.0,
+                        "metrics": {
+                            "Thickness_1": {
+                                "count": 10,
+                                "mean": 50.0,
+                                "stdev": 1.0,
+                                "min": 48.0,
+                                "max": 52.0,
+                            }
+                        },
+                    }
+                ],
+            },
+            {
+                "filename": "layer-count-test.csv",
+                "object_key": "tests/layer-count-test.csv",
+                "sha256": "c" * 64,
+                "size_bytes": 100,
+            },
+        )
+        robot_two = app_module.query_one("SELECT id FROM systems WHERE name='Robot 2'")
+        aliases = [
+            row["source_name"]
+            for row in source_mappings("Client Plant")
+            if row["system_id"] == robot_two["id"]
+        ]
+        payload = metric_series(
+            "Client Plant",
+            {"start": "2026-03-23", "end": "2026-03-23"},
+            "thickness",
+            "daily",
+            aliases=aliases,
+        )
+        clearcoat = [point for point in payload["points"] if point["series"] == "Clearcoat"]
+        self.assertEqual(len(clearcoat), 1)
+        self.assertGreaterEqual(clearcoat[0]["count"], 10)
 
     def test_sample_summary_and_system_filtered_api(self):
         sample = (

@@ -350,6 +350,7 @@ TERACOTA_SMTP_SECURITY=ssl
 TERACOTA_SMTP_USERNAME="YOUR_GOOGLE_EMAIL_ADDRESS"
 TERACOTA_SMTP_APP_PASSWORD="YOUR_16_CHARACTER_GOOGLE_APP_PASSWORD"
 TERACOTA_SMTP_FROM="YOUR_GOOGLE_EMAIL_ADDRESS"
+TERACOTA_HEALTH_ALERT_REPEAT_MINUTES=360
 ```
 
 | Variable | Purpose |
@@ -376,6 +377,7 @@ TERACOTA_SMTP_FROM="YOUR_GOOGLE_EMAIL_ADDRESS"
 | `TERACOTA_SMTP_USERNAME` | Google account used to send TeraCota email. |
 | `TERACOTA_SMTP_APP_PASSWORD` | Google app password. Do not use the normal Google account password. |
 | `TERACOTA_SMTP_FROM` | Sender address shown on notification messages. Normally the same as the username. |
+| `TERACOTA_HEALTH_ALERT_REPEAT_MINUTES` | Minimum repeat interval for an unchanged server-health warning. The default is six hours. |
 
 The app refuses to start in production if the password is still `pythagorus` or
 the session key is still the development default.
@@ -482,7 +484,7 @@ After TeraCota starts, open `/admin`, select **Locations**, and configure each
 location independently:
 
 1. Add each team address as its own recipient row.
-2. For each address, select **Operational updates**, **Daily 5 AM summary**, or both.
+2. For each address, select **Operational updates**, **Daily 5 AM summary**, or both. Operational-update recipients also receive server-health warnings and recovery notices.
 3. Save that location.
 
 Only locations with at least one current system appear in this list. Existing
@@ -492,11 +494,18 @@ choices on each saved email address automatically.
 Operational changes are committed to SQLite first and placed in a durable
 outbox. The dispatcher checks that outbox every minute. Delivery failure does
 not block a visit, issue, update, or system edit; the message is retried with
-increasing delays. The daily timer runs at 5:00 AM America/Toronto and queues a
-measurement summary for the previous calendar day. Each robot is listed with
-its job count, total raw measurements, alignment percentage, and valid-measurement
-percentage. These values use the same source mappings and definitions as
-Measurement History. `Persistent=true` means a summary missed
+increasing delays. The dispatcher also checks server health every minute. It
+queues a warning when memory reaches 85%, swap reaches 70%, disk reaches 85%,
+one-minute CPU load exceeds the logical CPU count, or a measurement import has
+failed. An unchanged warning repeats no more than every six hours, and a recovery
+message is sent when all indicators return below their thresholds.
+
+The daily timer runs at 5:00 AM America/Toronto and queues a measurement summary
+for the previous calendar day. Each robot has an HTML table comparing that day
+with the two preceding calendar days. Every row includes job count, total raw
+measurements, alignment percentage, and valid-measurement percentage. These
+values use the same source mappings and definitions as Measurement History.
+`Persistent=true` means a summary missed
 while the instance was off is run after the next boot. Each location/date pair
 is queued only once.
 

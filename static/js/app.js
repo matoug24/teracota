@@ -14,9 +14,11 @@ let issueSeverityFilter = "All";
 let issueStatusFilter = "All";
 let visitTypeFilter = "All";
 let systemRecordTab = "visits";
+let locationRecordTab = "visits";
 let issuePage = 1;
 let visitPage = 1;
 let updatePage = 1;
+let statusPage = 1;
 let openIssueSeverityFilter = "All";
 let openIssuesPageNumber = 1;
 let logsPageNumber = 1;
@@ -26,7 +28,7 @@ const pageMode = document.body.dataset.page || "home";
 const initialSystemId = Number(document.body.dataset.systemId || 0);
 const initialLocation = document.body.dataset.location || "";
 const visitCategories = ["Calibration", "Alignment", "Commissioning", "Troubleshooting"];
-const issueRelations = ["Head", "HAS", "Fiber", "Optics", "Electronic", "Software", "Other"];
+const issueRelations = ["Head", "HAS", "Fiber", "Optics", "Electronic", "Software", "Not TVL related", "Other"];
 const systemUpdateTypes = ["Software", "Calibration"];
 const systemRecordPageSize = 20;
 const logPageSize = 50;
@@ -434,9 +436,15 @@ function renderSystemDetailPage() {
   const issuePagination = paginateItems(filteredIssues, issuePage, systemRecordPageSize);
   const visitPagination = paginateItems(visibleVisits, visitPage, systemRecordPageSize);
   const updatePagination = paginateItems(visibleUpdates, updatePage, systemRecordPageSize);
+  const statusPagination = paginateItems(
+    [...system.status_history].sort((a, b) => String(b.started_at).localeCompare(String(a.started_at)) || b.id - a.id),
+    statusPage,
+    systemRecordPageSize,
+  );
   issuePage = issuePagination.page;
   visitPage = visitPagination.page;
   updatePage = updatePagination.page;
+  statusPage = statusPagination.page;
 
   systemDetailPage.innerHTML = `
     <div class="detail-page-header">
@@ -465,21 +473,6 @@ function renderSystemDetailPage() {
       </header>
       ${renderTimelineScale(detailTimeline.start, detailTimeline.end, "detail-timeline-scale")}
       ${renderTimelineRow(system, detailTimeline.start, detailTimeline.end)}
-      <div class="timeline-history-grid">
-        <div class="timeline-history-block">
-          <span class="timeline-history-title">System Status Changes</span>
-          <div class="status-history-list status-history-stack" aria-label="Status history">
-            ${system.status_history.map((entry) => `
-              <span class="status-history-item">
-                <i class="status-dot ${getStatusClass(entry.status)}"></i>
-                <strong>${escapeHtml(entry.status)}</strong>
-                <small>from ${formatDate(entry.started_at)}${entry.note ? ` - ${escapeHtml(entry.note)}` : ""}</small>
-              </span>
-            `).join("")}
-          </div>
-        </div>
-        ${renderSystemUpdateHistory(system.updates || [])}
-      </div>
       <div class="timeline-summary">
         <div><span>Open Issues</span><strong>${openIssueCount}</strong></div>
         <div><span>Total Issues</span><strong>${system.issues.length}</strong></div>
@@ -492,6 +485,7 @@ function renderSystemDetailPage() {
       <button class="system-record-tab ${systemRecordTab === "visits" ? "active" : ""}" type="button" data-system-record-tab="visits">Site Visits <span>${system.maintenance.length}</span></button>
       <button class="system-record-tab ${systemRecordTab === "issues" ? "active" : ""}" type="button" data-system-record-tab="issues">Issues <span>${system.issues.length}</span></button>
       <button class="system-record-tab ${systemRecordTab === "updates" ? "active" : ""}" type="button" data-system-record-tab="updates">System Updates <span>${(system.updates || []).length}</span></button>
+      <button class="system-record-tab ${systemRecordTab === "status" ? "active" : ""}" type="button" data-system-record-tab="status">Status Changes <span>${system.status_history.length}</span></button>
     </nav>
 
     ${systemRecordTab === "issues" ? `
@@ -535,6 +529,30 @@ function renderSystemDetailPage() {
             : '<div class="issue-item"><h3>No system updates</h3><p>No calibration or software updates have been recorded.</p></div>'}
         </div>
         ${renderPagination("updates", updatePagination, "updates")}
+      </section>
+    ` : ""}
+
+    ${systemRecordTab === "status" ? `
+      <section class="detail-section system-record-panel">
+        <header>
+          <h3>Status Changes</h3>
+          <span class="tag">${system.status_history.length} changes</span>
+        </header>
+        <div class="status-record-list">
+          ${statusPagination.items.length
+            ? statusPagination.items.map((entry) => `
+              <article class="status-record-item">
+                <i class="status-dot ${getStatusClass(entry.status)}"></i>
+                <div>
+                  <strong>${escapeHtml(entry.status)}</strong>
+                  <span>${formatDate(entry.started_at)}</span>
+                  <p>${escapeHtml(entry.note || "No note recorded.")}</p>
+                </div>
+              </article>
+            `).join("")
+            : '<div class="issue-item"><h3>No status changes</h3><p>No status history is available.</p></div>'}
+        </div>
+        ${renderPagination("status", statusPagination, "status changes")}
       </section>
     ` : ""}
   `;
@@ -608,6 +626,7 @@ function bindRecordFilters() {
       if (button.dataset.recordPage === "issues") issuePage = page;
       if (button.dataset.recordPage === "visits") visitPage = page;
       if (button.dataset.recordPage === "updates") updatePage = page;
+      if (button.dataset.recordPage === "status") statusPage = page;
       renderSystemDetailPage();
     });
   });
@@ -699,21 +718,33 @@ function renderLocationDetailPage() {
       </div>
     </section>
 
-    <div class="detail-layout location-records">
-      <section class="detail-section">
+    <nav class="system-record-tabs location-record-tabs" aria-label="Location records">
+      <button class="system-record-tab ${locationRecordTab === "visits" ? "active" : ""}" type="button" data-location-record-tab="visits">Site Visits <span>${siteVisits.length}</span></button>
+      <button class="system-record-tab ${locationRecordTab === "issues" ? "active" : ""}" type="button" data-location-record-tab="issues">Issues <span>${issues.length}</span></button>
+    </nav>
+
+    ${locationRecordTab === "issues" ? `
+      <section class="detail-section system-record-panel location-record-panel">
         <header><h3>Combined Issues</h3><span class="tag">${issues.length}</span></header>
         <div class="issue-list">${renderLocationIssues(issues)}</div>
       </section>
-      <section class="detail-section">
+    ` : `
+      <section class="detail-section system-record-panel location-record-panel">
         <header><h3>Site Visit History</h3><span class="tag">${siteVisits.length}</span></header>
         <div class="record-list">${renderLocationVisits(siteVisits)}</div>
       </section>
-    </div>
+    `}
   `;
   spreadTimelineMarkers(locationDetailPage);
   locationDetailPage.querySelectorAll(".timeline-row").forEach((button) => {
     button.addEventListener("click", () => {
       window.location.href = `/systems/${button.dataset.systemId}`;
+    });
+  });
+  locationDetailPage.querySelectorAll("[data-location-record-tab]").forEach((button) => {
+    button.addEventListener("click", () => {
+      locationRecordTab = button.dataset.locationRecordTab;
+      renderLocationDetailPage();
     });
   });
   locationDetailPage.querySelectorAll("[data-edit-site-visit]").forEach((button) => {
@@ -1142,7 +1173,7 @@ function renderStatisticsPage() {
   recentCutoff.setDate(recentCutoff.getDate() - 90);
   const recentVisits = siteVisits.filter((visit) => dateOnly(visit.date) >= recentCutoff).length;
 
-  const statusBars = ["Operational", "Needs Maintenance", "Offline", "Commissioning"].map((status) => ({
+  const statusBars = ["Operational", "Needs Intervention", "Offline", "Commissioning"].map((status) => ({
     label: status,
     value: systems.filter((system) => system.status === status).length,
     className: getStatusClass(status),
@@ -1331,16 +1362,22 @@ function renderStatBars(items, emptyMessage) {
 }
 
 function renderActivityChart(months, maximum) {
+  const tickCount = Math.min(4, maximum);
+  const ticks = Array.from({ length: tickCount + 1 }, (_, index) => Math.round(maximum * (tickCount - index) / tickCount))
+    .filter((value, index, values) => index === 0 || value !== values[index - 1]);
   return `
     <div class="activity-chart-wrap">
+      <div class="activity-y-axis" aria-hidden="true">
+        ${ticks.map((value) => `<span>${value}</span>`).join("")}
+      </div>
       <div class="activity-chart" role="img" aria-label="Monthly site visits and issues opened over the last 12 months">
         ${months.map((month) => `
-          <div class="activity-month">
+          <div class="activity-month" title="${escapeAttribute(month.label)}">
             <div class="activity-bars">
               <i class="activity-bar visits" style="height: ${month.visits ? Math.max(6, (month.visits / maximum) * 100) : 0}%" title="${month.label}: ${month.visits} site visits"></i>
               <i class="activity-bar issues" style="height: ${month.issues ? Math.max(6, (month.issues / maximum) * 100) : 0}%" title="${month.label}: ${month.issues} issues opened"></i>
             </div>
-            <span>${escapeHtml(month.shortLabel)}</span>
+            <span>${escapeHtml(month.monthLabel)}</span>
           </div>
         `).join("")}
       </div>
@@ -1356,6 +1393,7 @@ function lastTwelveMonths() {
       key: `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, "0")}`,
       label: date.toLocaleDateString("en", { month: "long", year: "numeric" }),
       shortLabel: date.toLocaleDateString("en", { month: "short", year: "2-digit" }),
+      monthLabel: date.toLocaleDateString("en", { month: "short" }),
     };
   });
 }
@@ -1769,7 +1807,7 @@ function systemFields(system = {}, options = {}) {
     locationField,
     field("status", "Status", "select", system.status || "Operational", [
       "Operational",
-      "Needs Maintenance",
+      "Needs Intervention",
       "Offline",
       "Commissioning",
     ]),
@@ -1784,7 +1822,7 @@ function statusHistoryFields(entry = {}) {
   return [
     field("status", "Status", "select", entry.status || "Operational", [
       "Operational",
-      "Needs Maintenance",
+      "Needs Intervention",
       "Offline",
       "Commissioning",
     ]),
@@ -2136,27 +2174,6 @@ function renderIssueSystemLinks(issue) {
   return systemsLinkedToIssue(issue).map((system) => `
     <a class="tag link-tag" href="/systems/${system.id}">${escapeHtml(system.name)}</a>
   `).join("");
-}
-
-function renderSystemUpdateHistory(updates) {
-  return `
-    <div class="timeline-history-block system-update-history">
-      <div class="timeline-history-heading">
-        <span class="timeline-history-title">Calibration &amp; Software Updates</span>
-        <span class="tag">${updates.length}</span>
-      </div>
-      ${updates.length ? `
-        <div class="status-history-list system-update-list">
-          ${updates.map((update) => `
-            <span class="status-history-item system-update-history-item">
-              ${renderUpdateDots(update.update_type)}
-              ${escapeHtml(updateTypeLabel(update.update_type))} <small>${formatDate(update.date)}</small>
-            </span>
-          `).join("")}
-        </div>
-      ` : '<p class="muted update-history-empty">No calibration or software updates recorded.</p>'}
-    </div>
-  `;
 }
 
 function selectedUpdateTypes(value) {

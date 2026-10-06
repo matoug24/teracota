@@ -318,6 +318,8 @@ def init_db():
     execute("CREATE INDEX IF NOT EXISTS idx_visitor_logs_visited_at ON visitor_logs (visited_at DESC)")
     execute("CREATE INDEX IF NOT EXISTS idx_system_updates_system_date ON system_updates (system_id, date DESC)")
     execute("CREATE INDEX IF NOT EXISTS idx_system_issue_links_system ON system_issue_links (system_id, issue_id)")
+    execute("UPDATE systems SET status='Needs Intervention' WHERE status='Needs Maintenance'")
+    execute("UPDATE system_status_history SET status='Needs Intervention' WHERE status='Needs Maintenance'")
     initialize_measurement_config()
     initialize_measurement_databases()
     if env_flag("TERACOTA_SEED_DEMO", not PRODUCTION):
@@ -348,7 +350,7 @@ def seed_db():
         (
             "TeraCota Beta",
             "South Site",
-            "Needs Maintenance",
+            "Needs Intervention",
             "Field Service",
             "2026-06-28",
             "2026-07-15",
@@ -569,6 +571,16 @@ def queue_operational_email(location, category, action, title, details=None):
         )
 
 
+def changed_email_details(previous, current, fields):
+    changes = {}
+    for key, label in fields:
+        before = str(previous.get(key) or "").strip()
+        after = str(current.get(key) or "").strip()
+        if before != after:
+            changes[label] = f"{before or 'Not set'} -> {after or 'Not set'}"
+    return changes or {"Changes": "Saved; no field values changed"}
+
+
 def is_authenticated():
     return session.get("logged_in") is True
 
@@ -695,7 +707,7 @@ def clean_categories(value):
 
 
 def clean_issue_relations(value):
-    allowed = ["Head", "HAS", "Fiber", "Optics", "Electronic", "Software", "Other"]
+    allowed = ["Head", "HAS", "Fiber", "Optics", "Electronic", "Software", "Not TVL related", "Other"]
     lookup = {item.lower(): item for item in allowed}
     values = value if isinstance(value, list) else str(value or "").split(",")
     selected = []
@@ -888,7 +900,9 @@ def clean_severity(value):
 
 def clean_system_status(value):
     status = clean(value, "Operational")
-    allowed = ("Operational", "Needs Maintenance", "Offline", "Commissioning")
+    if status == "Needs Maintenance":
+        status = "Needs Intervention"
+    allowed = ("Operational", "Needs Intervention", "Offline", "Commissioning")
     return status if status in allowed else "Operational"
 
 
@@ -1278,7 +1292,7 @@ def create_system():
         (
             clean(payload.get("name"), "Untitled System"),
             clean(payload.get("location"), "Unknown Location"),
-            clean(payload.get("status"), "Operational"),
+            clean_system_status(payload.get("status")),
             "Unassigned",
             "",
             "",
@@ -1289,7 +1303,7 @@ def create_system():
         "INSERT INTO system_status_history (system_id, status, started_at, note) VALUES (?, ?, ?, ?)",
         (
             cursor.lastrowid,
-            clean(payload.get("status"), "Operational"),
+            clean_system_status(payload.get("status")),
             clean(payload.get("status_start"), today_iso()),
             clean(payload.get("status_note")),
         ),
@@ -1318,7 +1332,7 @@ def update_system(system_id):
     previous = query_one("SELECT name, status, location FROM systems WHERE id = ?", (system_id,))
     if not previous:
         abort(404)
-    new_status = clean(payload.get("status"), "Operational")
+    new_status = clean_system_status(payload.get("status"))
     new_location = clean(payload.get("location"), previous["location"])
     if new_location != previous["location"]:
         if not query_one("SELECT name FROM locations WHERE name = ?", (new_location,)):
@@ -1426,7 +1440,7 @@ def update_status_history(history_id):
     payload = request.get_json(force=True)
     history = query_one(
         """
-        SELECT h.system_id,s.name AS system_name,s.location
+        SELECT h.*,s.name AS system_name,s.location
         FROM system_status_history h JOIN systems s ON s.id=h.system_id
         WHERE h.id = ?
         """,
@@ -1434,12 +1448,17 @@ def update_status_history(history_id):
     )
     if not history:
         abort(404)
+    updated = {
+        "status": clean_system_status(payload.get("status")),
+        "started_at": clean(payload.get("started_at"), today_iso()),
+        "note": clean(payload.get("note")),
+    }
     execute(
         "UPDATE system_status_history SET status = ?, started_at = ?, note = ? WHERE id = ?",
         (
-            clean_system_status(payload.get("status")),
-            clean(payload.get("started_at"), today_iso()),
-            clean(payload.get("note")),
+            updated["status"],
+            updated["started_at"],
+            updated["note"],
             history_id,
         ),
     )
@@ -1449,11 +1468,11 @@ def update_status_history(history_id):
         "Status change",
         "Edited",
         history["system_name"],
-        {
-            "Status": clean_system_status(payload.get("status")),
-            "Date": clean(payload.get("started_at"), today_iso()),
-            "Note": clean(payload.get("note")),
-        },
+        changed_email_details(
+            history,
+            updated,
+            (("status", "Status"), ("started_at", "Date"), ("note", "Note")),
+        ),
     )
     return jsonify(load_state())
 
@@ -1563,6 +1582,12 @@ def update_system_update(update_id):
     update_types = clean_update_types(payload.get("update_type"))
     if not update_types:
         return jsonify({"message": "Select at least one update type"}), 400
+    updated = {
+        "date": clean(payload.get("date"), today_iso()),
+        "update_type": update_types,
+        "reported_by": clean(payload.get("reported_by"), "Unknown"),
+        "notes": clean(payload.get("notes")),
+    }
     execute(
         """
         UPDATE system_updates
@@ -1570,10 +1595,10 @@ def update_system_update(update_id):
         WHERE id = ?
         """,
         (
-            clean(payload.get("date"), today_iso()),
-            update_types,
-            clean(payload.get("reported_by"), "Unknown"),
-            clean(payload.get("notes")),
+            updated["date"],
+            updated["update_type"],
+            updated["reported_by"],
+            updated["notes"],
             update_id,
         ),
     )
@@ -1582,11 +1607,16 @@ def update_system_update(update_id):
         "System update",
         "Edited",
         f"{update_types} - {existing['system_name']}",
-        {
-            "Date": clean(payload.get("date"), today_iso()),
-            "Reported by": clean(payload.get("reported_by"), "Unknown"),
-            "Notes": clean(payload.get("notes")),
-        },
+        changed_email_details(
+            existing,
+            updated,
+            (
+                ("update_type", "Update type"),
+                ("date", "Date"),
+                ("reported_by", "Reported by"),
+                ("notes", "Notes"),
+            ),
+        ),
     )
     return jsonify(load_state())
 
@@ -1669,11 +1699,11 @@ def update_site_visit(visit_id):
         "Site visit",
         "Edited",
         f"{visit_date} - {', '.join(names)}",
-        {
-            "Systems": ", ".join(names),
-            "Reported by": engineer,
-            "Previous date": visit["date"] if visit["date"] != visit_date else "",
-        },
+        changed_email_details(
+            visit,
+            {"date": visit_date, "engineer": engineer},
+            (("date", "Date"), ("engineer", "Reported by")),
+        ),
     )
     return jsonify(load_state())
 
@@ -1733,7 +1763,7 @@ def update_maintenance(record_id):
     engineer = clean(payload.get("engineer"), "Unknown engineer")
     record = query_one(
         """
-        SELECT m.system_id,m.visit_id,s.name AS system_name,s.location
+        SELECT m.*,s.name AS system_name,s.location
         FROM maintenance_records m JOIN systems s ON s.id=m.system_id
         WHERE m.id = ?
         """,
@@ -1776,17 +1806,27 @@ def update_maintenance(record_id):
     for system_id in affected_systems:
         refresh_last_visit(system_id)
     names = system_names(affected_systems)
+    updated = {
+        "date": visit_date,
+        "engineer": engineer,
+        "type": clean_categories(payload.get("type")),
+        "summary": clean(payload.get("summary")),
+    }
     queue_operational_email(
         record["location"],
         "Site visit",
         "Edited",
         f"{visit_date} - {', '.join(names)}",
-        {
-            "Systems": ", ".join(names),
-            "Reported by": engineer,
-            "Visit purpose": clean_categories(payload.get("type")) or "Not specified",
-            "Summary": clean(payload.get("summary")),
-        },
+        changed_email_details(
+            record,
+            updated,
+            (
+                ("date", "Date"),
+                ("engineer", "Reported by"),
+                ("type", "Visit purpose"),
+                ("summary", "Summary"),
+            ),
+        ),
     )
     return jsonify(load_state())
 
@@ -1887,7 +1927,7 @@ def create_issue(system_id):
         for selected_id in system_ids:
             current = query_one("SELECT status FROM systems WHERE id = ?", (selected_id,))
             if current and current["status"] == "Operational":
-                set_system_status(selected_id, "Needs Maintenance", payload.get("opened"))
+                set_system_status(selected_id, "Needs Intervention", payload.get("opened"))
     names = sorted(system["name"] for system in selected_systems)
     queue_operational_email(
         current_system["location"],
@@ -1915,7 +1955,7 @@ def update_issue(issue_id):
     payload = request.get_json(force=True)
     existing_issue = query_one(
         """
-        SELECT system_issues.system_id, systems.location
+        SELECT system_issues.*, systems.location
         FROM system_issues
         JOIN systems ON systems.id = system_issues.system_id
         WHERE system_issues.id = ?
@@ -1948,6 +1988,17 @@ def update_issue(issue_id):
     if issue_status not in ("Open", "Closed"):
         issue_status = "Open"
     closed_date = clean(payload.get("closed_date"), today_iso()) if issue_status == "Closed" else ""
+    updated_issue = {
+        "title": clean(payload.get("title"), "Untitled issue"),
+        "severity": clean_severity(payload.get("severity")),
+        "opened": clean(payload.get("opened"), today_iso()),
+        "status": issue_status,
+        "notes": clean(payload.get("notes")),
+        "reported_by": clean(payload.get("reported_by"), "Unknown"),
+        "resolution_notes": clean(payload.get("resolution_notes")),
+        "closed_date": closed_date,
+        "related_to": clean_issue_relations(payload.get("related_to")),
+    }
     with get_db() as db:
         db.execute(
             """
@@ -1958,15 +2009,15 @@ def update_issue(issue_id):
             """,
             (
                 system_ids[0],
-                clean(payload.get("title"), "Untitled issue"),
-                clean_severity(payload.get("severity")),
-                clean(payload.get("opened"), today_iso()),
-                issue_status,
-                clean(payload.get("notes")),
-                clean(payload.get("reported_by"), "Unknown"),
-                clean(payload.get("resolution_notes")),
-                closed_date,
-                clean_issue_relations(payload.get("related_to")),
+                updated_issue["title"],
+                updated_issue["severity"],
+                updated_issue["opened"],
+                updated_issue["status"],
+                updated_issue["notes"],
+                updated_issue["reported_by"],
+                updated_issue["resolution_notes"],
+                updated_issue["closed_date"],
+                updated_issue["related_to"],
                 issue_id,
             ),
         )
@@ -1977,22 +2028,30 @@ def update_issue(issue_id):
         )
         db.commit()
     names = sorted(system["name"] for system in selected_systems)
+    previous_names = system_names(existing_system_ids)
+    previous_email = {**existing_issue, "systems": ", ".join(previous_names)}
+    updated_email = {**updated_issue, "systems": ", ".join(names)}
     queue_operational_email(
         existing_issue["location"],
         "Issue",
         "Edited",
-        clean(payload.get("title"), "Untitled issue"),
-        {
-            "Systems": ", ".join(names),
-            "Date": clean(payload.get("opened"), today_iso()),
-            "Status": issue_status,
-            "Severity": clean_severity(payload.get("severity")),
-            "Related to": clean_issue_relations(payload.get("related_to")),
-            "Reported by": clean(payload.get("reported_by"), "Unknown"),
-            "Details": clean(payload.get("notes")),
-            "Resolution notes": clean(payload.get("resolution_notes")),
-            "Closed date": closed_date,
-        },
+        updated_issue["title"],
+        changed_email_details(
+            previous_email,
+            updated_email,
+            (
+                ("title", "Title"),
+                ("systems", "Systems"),
+                ("opened", "Date"),
+                ("status", "Status"),
+                ("severity", "Severity"),
+                ("related_to", "Related to"),
+                ("reported_by", "Reported by"),
+                ("notes", "Details"),
+                ("resolution_notes", "Resolution notes"),
+                ("closed_date", "Closed date"),
+            ),
+        ),
     )
     return jsonify(load_state())
 

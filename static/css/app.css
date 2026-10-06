@@ -483,7 +483,8 @@ h2 {
   background: var(--green);
 }
 
-.status-needs-maintenance {
+.status-needs-maintenance,
+.status-needs-intervention {
   color: var(--amber);
   background: var(--amber);
 }
@@ -1776,7 +1777,7 @@ dialog::backdrop {
 }
 
 .statistics-activity-section .activity-chart {
-  min-width: 560px;
+  min-width: 0;
   height: 220px;
 }
 
@@ -1837,7 +1838,8 @@ dialog::backdrop {
   background: var(--green);
 }
 
-.stat-bar-fill.status-needs-maintenance {
+.stat-bar-fill.status-needs-maintenance,
+.stat-bar-fill.status-needs-intervention {
   background: var(--amber);
 }
 
@@ -1885,17 +1887,36 @@ dialog::backdrop {
   background: var(--red);
 }
 
-.activity-chart-wrap,
+.activity-chart-wrap {
+  display: grid;
+  grid-template-columns: 28px minmax(0, 1fr);
+  gap: 8px;
+  width: 100%;
+  min-width: 0;
+  overflow: hidden;
+}
+
 .statistics-table-wrap {
   width: 100%;
   overflow-x: auto;
 }
 
+.activity-y-axis {
+  display: flex;
+  flex-direction: column;
+  justify-content: space-between;
+  height: 192px;
+  color: var(--muted);
+  font-size: 0.68rem;
+  font-variant-numeric: tabular-nums;
+  text-align: right;
+}
+
 .activity-chart {
   display: grid;
-  grid-template-columns: repeat(12, minmax(48px, 1fr));
-  gap: 8px;
-  min-width: 720px;
+  grid-template-columns: repeat(12, minmax(0, 1fr));
+  gap: clamp(2px, 0.7vw, 8px);
+  min-width: 0;
   height: 240px;
   border-bottom: 1px solid var(--line);
   background: repeating-linear-gradient(to top, transparent 0, transparent 49px, color-mix(in srgb, var(--line) 65%, transparent) 50px);
@@ -1925,7 +1946,7 @@ dialog::backdrop {
 
 .activity-month > span {
   color: var(--muted);
-  font-size: 0.7rem;
+  font-size: clamp(0.58rem, 0.7vw, 0.7rem);
   font-weight: 700;
   text-align: center;
 }
@@ -2014,11 +2035,13 @@ dialog::backdrop {
 .system-record-tabs {
   display: flex;
   justify-content: center;
-  gap: 8px;
-  width: min(820px, 100%);
-  margin: 4px auto 0;
-  border-bottom: 1px solid var(--line);
-  padding: 0 8px;
+  gap: 10px;
+  width: min(1040px, 100%);
+  margin: 12px auto 0;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--surface-alt);
+  padding: 7px;
 }
 
 .system-record-tab {
@@ -2026,14 +2049,15 @@ dialog::backdrop {
   align-items: center;
   justify-content: center;
   gap: 9px;
-  min-width: 180px;
-  min-height: 48px;
-  border: 0;
-  border-bottom: 3px solid transparent;
+  flex: 1 1 0;
+  min-width: 150px;
+  min-height: 58px;
+  border: 1px solid transparent;
+  border-radius: 6px;
   background: transparent;
   color: var(--muted);
   padding: 10px 18px;
-  font-size: 0.98rem;
+  font-size: 1.05rem;
   font-weight: 850;
 }
 
@@ -2048,8 +2072,10 @@ dialog::backdrop {
 
 .system-record-tab:hover,
 .system-record-tab.active {
-  border-bottom-color: var(--blue);
+  border-color: color-mix(in srgb, var(--blue) 45%, var(--line));
+  background: var(--surface);
   color: var(--blue);
+  box-shadow: var(--shadow);
 }
 
 .system-record-tab.active span {
@@ -2059,6 +2085,52 @@ dialog::backdrop {
 
 .system-record-panel {
   width: 100%;
+}
+
+.location-record-tabs {
+  width: min(700px, 100%);
+}
+
+.location-record-panel {
+  margin-inline: auto;
+}
+
+.status-record-list {
+  display: grid;
+  gap: 0;
+}
+
+.status-record-item {
+  display: grid;
+  grid-template-columns: 14px minmax(0, 1fr);
+  gap: 12px;
+  border-top: 1px solid var(--line);
+  padding: 15px 2px;
+}
+
+.status-record-item:first-child {
+  border-top: 0;
+}
+
+.status-record-item .status-dot {
+  margin-top: 5px;
+}
+
+.status-record-item > div {
+  display: grid;
+  grid-template-columns: minmax(140px, auto) 1fr;
+  gap: 4px 14px;
+}
+
+.status-record-item span {
+  color: var(--muted);
+  font-size: 0.8rem;
+}
+
+.status-record-item p {
+  grid-column: 1 / -1;
+  margin: 3px 0 0;
+  white-space: pre-line;
 }
 
 .open-issues-header {
@@ -2486,6 +2558,7 @@ button.task-item:hover {
   .system-record-tab {
     width: 100%;
     min-width: 0;
+    min-height: 52px;
     border: 1px solid var(--line);
     border-left: 4px solid transparent;
   }
@@ -2494,6 +2567,10 @@ button.task-item:hover {
   .system-record-tab.active {
     border-color: var(--line);
     border-left-color: var(--blue);
+  }
+
+  .status-record-item > div {
+    grid-template-columns: 1fr;
   }
 
   .statistics-section > header,

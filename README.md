@@ -18,9 +18,9 @@ be accessed.
 - Development ideas and tasks
 - Deleted issue and visit recovery from the admin page
 - Visitor logs for authenticated sessions
-- Server health with failed measurement-import details and retry queuing in the admin page
+- Server health with failed measurement-import details, retry queuing, and warning emails
 - Visitor records and the rotating Flask application log under separate `/logs` tabs
-- Per-location update emails and 5:00 AM previous-day measurement summaries by robot
+- Concise HTML update emails and 5:00 AM three-day measurement comparisons by robot
 - Operational statistics
 - Measurement summaries imported from production CSV files
 - Source aliases that map one or more raw robot names to a TeraCota system
@@ -168,7 +168,8 @@ decision changes. They are intentionally accessed by route.
 The admin page is divided into Monitoring, Locations, Systems, Settings, and
 Recovery. Configure recipients under **Locations > Email Notifications**. Each
 email address independently selects operational updates, daily summaries, or
-both. Only locations that currently contain systems are shown.
+both. Operational-update recipients also receive server-health warning and
+recovery emails. Only locations that currently contain systems are shown.
 SMTP credentials remain in the server-only `.env` file and are never returned
 to the browser or stored in the database.
 

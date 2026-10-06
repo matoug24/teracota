@@ -6,6 +6,7 @@ import argparse
 from datetime import date, datetime, timedelta, timezone
 from email.message import EmailMessage
 from email.utils import parseaddr
+from html import escape
 import json
 import os
 from pathlib import Path
@@ -18,7 +19,7 @@ from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from flask import Blueprint, abort, jsonify, request
 
-from measurements.daily_summary import robot_daily_metrics
+from measurements.daily_summary import robot_metrics_for_dates
 
 
 EMAIL_PATTERN = re.compile(r"^[^\s@]+@[^\s@]+\.[^\s@]+$")
@@ -80,6 +81,7 @@ def initialize_notification_schema(database_path: str | Path) -> None:
                 recipients TEXT NOT NULL,
                 subject TEXT NOT NULL,
                 body_text TEXT NOT NULL,
+                body_html TEXT NOT NULL DEFAULT '',
                 status TEXT NOT NULL DEFAULT 'PENDING',
                 attempts INTEGER NOT NULL DEFAULT 0,
                 created_at TEXT NOT NULL,
@@ -94,12 +96,25 @@ def initialize_notification_schema(database_path: str | Path) -> None:
                 queued_at TEXT NOT NULL,
                 PRIMARY KEY (location, summary_date)
             );
+            CREATE TABLE IF NOT EXISTS health_alert_state (
+                id INTEGER PRIMARY KEY CHECK(id=1),
+                active_signature TEXT NOT NULL DEFAULT '',
+                last_queued_at TEXT,
+                updated_at TEXT NOT NULL
+            );
             CREATE INDEX IF NOT EXISTS idx_email_outbox_delivery
                 ON email_outbox(status, next_attempt_at, id);
             CREATE INDEX IF NOT EXISTS idx_email_outbox_location
                 ON email_outbox(location, created_at DESC);
             """
         )
+        columns = {
+            row["name"] for row in connection.execute("PRAGMA table_info(email_outbox)")
+        }
+        if "body_html" not in columns:
+            connection.execute(
+                "ALTER TABLE email_outbox ADD COLUMN body_html TEXT NOT NULL DEFAULT ''"
+            )
 
 
 def parse_recipients(value) -> list[str]:
@@ -318,14 +333,15 @@ def _queue_message(
     recipients: list[str],
     subject: str,
     body_text: str,
+    body_html: str = "",
 ) -> int:
     now = _iso()
     cursor = connection.execute(
         """
         INSERT INTO email_outbox(
-            location,notification_type,recipients,subject,body_text,status,
+            location,notification_type,recipients,subject,body_text,body_html,status,
             attempts,created_at,next_attempt_at,updated_at
-        ) VALUES(?,?,?,?,?,'PENDING',0,?,?,?)
+        ) VALUES(?,?,?,?,?,?,'PENDING',0,?,?,?)
         """,
         (
             location,
@@ -333,12 +349,45 @@ def _queue_message(
             json.dumps(recipients, separators=(",", ":")),
             subject.replace("\r", " ").replace("\n", " ")[:240],
             body_text,
+            body_html,
             now,
             now,
             now,
         ),
     )
     return int(cursor.lastrowid)
+
+
+def _email_document(title: str, subtitle: str, content: str, link_text: str, link_url: str) -> str:
+    return f"""<!doctype html>
+<html><body style="margin:0;background:#f3f6f7;color:#17262d;font-family:Arial,sans-serif">
+<div style="display:none;max-height:0;overflow:hidden">{escape(subtitle)}</div>
+<div style="max-width:720px;margin:0 auto;padding:28px 16px">
+  <div style="border-top:5px solid #12747b;background:#ffffff;padding:26px;border-radius:7px">
+    <div style="font-size:12px;font-weight:700;letter-spacing:.08em;color:#5f7078;text-transform:uppercase">TeraCota 2000</div>
+    <h1 style="margin:8px 0 4px;font-size:24px;line-height:1.2;color:#10252f">{escape(title)}</h1>
+    <p style="margin:0 0 22px;color:#5f7078">{escape(subtitle)}</p>
+    {content}
+    <p style="margin:24px 0 0"><a href="{escape(link_url, quote=True)}" style="display:inline-block;background:#12747b;color:#ffffff;text-decoration:none;font-weight:700;padding:11px 16px;border-radius:5px">{escape(link_text)}</a></p>
+  </div>
+</div></body></html>"""
+
+
+def _details_html(details: dict) -> str:
+    rows = []
+    for label, value in details.items():
+        text = str(value or "").strip()
+        if not text:
+            continue
+        rows.append(
+            "<tr>"
+            f'<th style="width:150px;padding:9px 12px;text-align:left;vertical-align:top;color:#5f7078;border-bottom:1px solid #e3eaed">{escape(str(label))}</th>'
+            f'<td style="padding:9px 12px;border-bottom:1px solid #e3eaed;white-space:pre-line">{escape(text)}</td>'
+            "</tr>"
+        )
+    if not rows:
+        return ""
+    return '<table role="presentation" style="width:100%;border-collapse:collapse;font-size:14px">' + "".join(rows) + "</table>"
 
 
 def queue_update_notification(
@@ -365,60 +414,101 @@ def queue_update_notification(
         ]
         if not recipients:
             return None
-        lines = [
-            "TeraCota 2000 operational update",
-            "",
-            f"Location: {location}",
-            f"Type: {category}",
-            f"Action: {action}",
-            f"Item: {title}",
-        ]
+        action_lower = action.lower()
+        heading = f"{category} {action_lower}"
+        if action_lower in {"added", "reported", "recorded"}:
+            lead = f"A new {category.lower()} was {action_lower}."
+        elif action_lower == "edited":
+            lead = f"{category} was updated. The changed fields are shown below."
+        elif action_lower == "deleted":
+            lead = f"{category} was removed from the active record."
+        else:
+            lead = f"{category} was {action_lower}."
+        lines = [heading, "", f"{title}", f"Location: {location}", lead]
         for label, value in details.items():
             text = str(value or "").strip()
             if text:
                 lines.append(f"{label}: {text}")
-        lines.extend(["", f"Changed by: {actor}", f"Recorded at: {_iso()}"])
+        lines.extend(["", f"By: {actor}", f"Recorded: {_iso()}"])
         base_url = os.environ.get(
             "TERACOTA_PUBLIC_URL", "https://teracota.matoug.com"
         ).rstrip("/")
-        lines.append(f"Open TeraCota: {base_url}/locations/{quote(location, safe='')}")
+        location_url = f"{base_url}/locations/{quote(location, safe='')}"
+        lines.append(f"Open location: {location_url}")
+        content = (
+            f'<div style="margin-bottom:18px;padding:14px;background:#f3f7f8;border-left:4px solid #12747b">'
+            f'<strong style="display:block;font-size:17px">{escape(title)}</strong>'
+            f'<span style="color:#5f7078">{escape(location)} · {escape(lead)}</span></div>'
+            + _details_html(details)
+            + f'<p style="margin:18px 0 0;color:#5f7078;font-size:13px">Recorded by {escape(actor)}</p>'
+        )
         return _queue_message(
             connection,
             location,
             "UPDATE",
             recipients,
-            f"[TeraCota] {location} - {category} {action.lower()}: {title}",
+            f"[TeraCota] {location} - {heading}: {title}",
             "\n".join(lines),
+            _email_document(heading, location, content, "Open location", location_url),
         )
 
 
-def _daily_summary_body(
+def _display_date(value: str) -> str:
+    return date.fromisoformat(value).strftime("%b %d, %Y").replace(" 0", " ")
+
+
+def _daily_summary_bodies(
     database_path: str | Path,
     location: str,
     summary_date: str,
-) -> str:
-    robots = robot_daily_metrics(database_path, location, summary_date)
+) -> tuple[str, str]:
+    target = date.fromisoformat(summary_date)
+    dates = [(target - timedelta(days=offset)).isoformat() for offset in (2, 1, 0)]
+    robots = robot_metrics_for_dates(database_path, location, dates)
     lines = [
         "TeraCota 2000 daily measurement summary",
         "",
         f"Location: {location}",
-        f"Date: {summary_date}",
+        f"Reporting date: {_display_date(summary_date)}",
+        f"Comparison: {_display_date(dates[0])} to {_display_date(dates[-1])}",
     ]
+    html_sections = []
     for robot in robots:
-        lines.extend(
-            [
-                "",
-                robot["system_name"],
-                f"Jobs: {robot['jobs']:,}",
-                f"Total measurements: {robot['measurements']:,}",
-                f"Alignment: {robot['alignment_percentage']:.1f}%",
-                f"Valid measurements: {robot['valid_percentage']:.1f}%",
-            ]
-        )
+        lines.extend(["", robot["system_name"], "Date         | Jobs | Measurements | Alignment | Valid"])
+        lines.append("-------------|------|--------------|-----------|------")
+        html_rows = []
+        for day in robot["days"]:
+            lines.append(
+                f"{day['date']} | {day['jobs']:,} | {day['measurements']:,} | "
+                f"{day['alignment_percentage']:.1f}% | {day['valid_percentage']:.1f}%"
+            )
+            html_rows.append(
+                "<tr>"
+                f'<td style="padding:9px 10px;border-bottom:1px solid #e3eaed">{escape(_display_date(day["date"]))}</td>'
+                f'<td style="padding:9px 10px;text-align:right;border-bottom:1px solid #e3eaed">{day["jobs"]:,}</td>'
+                f'<td style="padding:9px 10px;text-align:right;border-bottom:1px solid #e3eaed">{day["measurements"]:,}</td>'
+                f'<td style="padding:9px 10px;text-align:right;border-bottom:1px solid #e3eaed">{day["alignment_percentage"]:.1f}%</td>'
+                f'<td style="padding:9px 10px;text-align:right;border-bottom:1px solid #e3eaed">{day["valid_percentage"]:.1f}%</td>'
+                "</tr>"
+            )
+        warning = ""
         if not robot["source_aliases"]:
             lines.append("Measurement source: Not configured")
+            warning = '<p style="margin:8px 0;color:#a15b00;font-size:13px">Measurement source is not configured for this robot.</p>'
+        html_sections.append(
+            f'<section style="margin:22px 0"><h2 style="margin:0 0 10px;font-size:18px;color:#10252f">{escape(robot["system_name"])}</h2>'
+            '<div style="overflow-x:auto"><table style="width:100%;border-collapse:collapse;font-size:13px">'
+            '<thead><tr style="background:#eef4f5;color:#42545c">'
+            '<th style="padding:9px 10px;text-align:left">Date</th>'
+            '<th style="padding:9px 10px;text-align:right">Jobs</th>'
+            '<th style="padding:9px 10px;text-align:right">Measurements</th>'
+            '<th style="padding:9px 10px;text-align:right">Alignment</th>'
+            '<th style="padding:9px 10px;text-align:right">Valid</th>'
+            f'</tr></thead><tbody>{"".join(html_rows)}</tbody></table></div>{warning}</section>'
+        )
     if not robots:
         lines.extend(["", "No systems are configured for this location."])
+        html_sections.append("<p>No systems are configured for this location.</p>")
 
     base_url = os.environ.get(
         "TERACOTA_PUBLIC_URL", "https://teracota.matoug.com"
@@ -430,7 +520,14 @@ def _daily_summary_body(
             f"{quote(location, safe='')}",
         ]
     )
-    return "\n".join(lines)
+    html = _email_document(
+        "Daily measurement summary",
+        f"{location} · {_display_date(summary_date)} with the previous two days",
+        "".join(html_sections),
+        "Open Measurement History",
+        f"{base_url}/measurements/location/{quote(location, safe='')}",
+    )
+    return "\n".join(lines), html
 
 
 def queue_daily_summaries(database_path: str | Path, summary_date: date | None = None) -> int:
@@ -466,14 +563,17 @@ def queue_daily_summaries(database_path: str | Path, summary_date: date | None =
             ).fetchone()
             if existing:
                 continue
-            body = _daily_summary_body(database_path, setting["location"], date_text)
+            body_text, body_html = _daily_summary_bodies(
+                database_path, setting["location"], date_text
+            )
             _queue_message(
                 connection,
                 setting["location"],
                 "DAILY",
                 recipients,
                 f"[TeraCota] {setting['location']} - Daily measurement summary for {date_text}",
-                body,
+                body_text,
+                body_html,
             )
             connection.execute(
                 "INSERT INTO daily_notification_runs(location,summary_date,queued_at) VALUES(?,?,?)",
@@ -481,6 +581,168 @@ def queue_daily_summaries(database_path: str | Path, summary_date: date | None =
             )
             queued += 1
     return queued
+
+
+def _health_warning_items(health: dict) -> list[tuple[str, str]]:
+    warnings = []
+    memory = health.get("memory") or {}
+    cpu = health.get("cpu") or {}
+    disk = health.get("disk") or {}
+    measurements = health.get("measurements") or {}
+    memory_percent = memory.get("used_percent")
+    swap_percent = memory.get("swap_used_percent")
+    load = cpu.get("load_1m")
+    processors = max(1, int(cpu.get("logical_processors") or 1))
+    root_disk = disk.get("root") or {}
+    measurement_disk = disk.get("measurement") or {}
+    if memory_percent is not None and float(memory_percent) >= 85:
+        warnings.append(("memory", f"Memory usage is {float(memory_percent):.1f}%"))
+    if swap_percent is not None and float(swap_percent) >= 70:
+        warnings.append(("swap", f"Swap usage is {float(swap_percent):.1f}%"))
+    if load is not None and float(load) > processors:
+        warnings.append(("cpu", f"1-minute CPU load is {float(load):.2f} across {processors} CPUs"))
+    root_percent = root_disk.get("used_percent")
+    if root_percent is not None and float(root_percent) >= 85:
+        warnings.append(("root-disk", f"Server disk usage is {float(root_percent):.1f}%"))
+    measurement_percent = measurement_disk.get("used_percent")
+    if (
+        measurement_percent is not None
+        and float(measurement_percent) >= 85
+        and measurement_disk != root_disk
+    ):
+        warnings.append(
+            ("measurement-disk", f"Measurement disk usage is {float(measurement_percent):.1f}%")
+        )
+    failed = int(measurements.get("failed_batches") or 0)
+    if failed:
+        warnings.append(("failed-imports", f"{failed} measurement import batch(es) failed"))
+    return warnings
+
+
+def _health_recipients(connection: sqlite3.Connection) -> list[str]:
+    recipients = []
+    for row in connection.execute(
+        "SELECT recipients,update_notifications,daily_summary FROM notification_settings"
+    ).fetchall():
+        for item in _stored_subscriptions(row):
+            if item["update_notifications"] and item["email"] not in recipients:
+                recipients.append(item["email"])
+    return recipients
+
+
+def queue_health_warning(database_path: str | Path) -> int:
+    """Queue a warning on a new/high server condition and a recovery when it clears."""
+    from server_monitoring import collect_server_health
+
+    initialize_notification_schema(database_path)
+    log_path = Path(
+        os.environ.get(
+            "TERACOTA_APP_LOG_PATH",
+            str(Path(database_path).resolve().parent / "logs" / "teracota.log"),
+        )
+    )
+    try:
+        backups = max(1, min(20, int(os.environ.get("TERACOTA_APP_LOG_BACKUPS", "5"))))
+    except ValueError:
+        backups = 5
+    health = collect_server_health(database_path, log_path, backups)
+    warnings = _health_warning_items(health)
+    signature = ",".join(sorted(key for key, _ in warnings))
+    now = _utc_now()
+    base_url = os.environ.get(
+        "TERACOTA_PUBLIC_URL", "https://teracota.matoug.com"
+    ).rstrip("/")
+    admin_url = f"{base_url}/admin"
+
+    with _connect(database_path) as connection:
+        recipients = _health_recipients(connection)
+        if not recipients:
+            return 0
+        previous = connection.execute(
+            "SELECT active_signature,last_queued_at FROM health_alert_state WHERE id=1"
+        ).fetchone()
+        previous_signature = previous["active_signature"] if previous else ""
+        last_queued = None
+        if previous and previous["last_queued_at"]:
+            try:
+                last_queued = datetime.fromisoformat(
+                    previous["last_queued_at"].replace("Z", "+00:00")
+                )
+            except ValueError:
+                last_queued = None
+        try:
+            repeat_minutes = max(
+                60, int(os.environ.get("TERACOTA_HEALTH_ALERT_REPEAT_MINUTES", "360"))
+            )
+        except ValueError:
+            repeat_minutes = 360
+
+        if signature:
+            unchanged_and_recent = (
+                signature == previous_signature
+                and last_queued is not None
+                and now - last_queued < timedelta(minutes=repeat_minutes)
+            )
+            if unchanged_and_recent:
+                return 0
+            text_lines = [
+                "TeraCota server health warning",
+                "",
+                *[f"- {message}" for _, message in warnings],
+                "",
+                f"Checked: {_iso(now)}",
+                f"Open Server Health: {admin_url}",
+            ]
+            warning_rows = "".join(
+                f'<li style="margin:8px 0">{escape(message)}</li>' for _, message in warnings
+            )
+            body_html = _email_document(
+                "Server health warning",
+                "One or more TeraCota server indicators need attention.",
+                f'<div style="padding:14px;background:#fff4e5;border-left:4px solid #c06b00"><ul style="margin:0;padding-left:20px">{warning_rows}</ul></div>',
+                "Open Server Health",
+                admin_url,
+            )
+            _queue_message(
+                connection,
+                "__SERVER__",
+                "HEALTH",
+                recipients,
+                f"[TeraCota] Server health warning: {len(warnings)} indicator(s)",
+                "\n".join(text_lines),
+                body_html,
+            )
+        elif previous_signature:
+            _queue_message(
+                connection,
+                "__SERVER__",
+                "HEALTH",
+                recipients,
+                "[TeraCota] Server health recovered",
+                f"TeraCota server health recovered.\n\nChecked: {_iso(now)}\nOpen Server Health: {admin_url}",
+                _email_document(
+                    "Server health recovered",
+                    "All monitored indicators are back below their warning thresholds.",
+                    '<p style="padding:14px;background:#eaf7ef;border-left:4px solid #268653">No active server-health warnings remain.</p>',
+                    "Open Server Health",
+                    admin_url,
+                ),
+            )
+        else:
+            return 0
+
+        connection.execute(
+            """
+            INSERT INTO health_alert_state(id,active_signature,last_queued_at,updated_at)
+            VALUES(1,?,?,?)
+            ON CONFLICT(id) DO UPDATE SET
+                active_signature=excluded.active_signature,
+                last_queued_at=excluded.last_queued_at,
+                updated_at=excluded.updated_at
+            """,
+            (signature, _iso(now), _iso(now)),
+        )
+        return 1
 
 
 def _claim_message(database_path: str | Path) -> dict | None:
@@ -522,6 +784,8 @@ def _send_message(configuration: dict, item: dict) -> None:
     message["From"] = configuration["sender"]
     message["To"] = ", ".join(recipients)
     message.set_content(item["body_text"])
+    if str(item.get("body_html") or "").strip():
+        message.add_alternative(item["body_html"], subtype="html")
     context = ssl.create_default_context()
     if configuration["security"] == "ssl":
         with smtplib.SMTP_SSL(
@@ -596,8 +860,9 @@ def main() -> int:
         sent, failed = deliver_pending(args.database)
         print(f"Queued {queued} daily summaries; sent {sent}; failed {failed}")
         return 1 if failed else 0
+    health_queued = queue_health_warning(args.database)
     sent, failed = deliver_pending(args.database)
-    print(f"Sent {sent} notification emails; failed {failed}")
+    print(f"Queued {health_queued} health notifications; sent {sent}; failed {failed}")
     return 1 if failed else 0
 
 

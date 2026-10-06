@@ -245,13 +245,37 @@ async function measurementLoadSummary() {
 }
 
 async function measurementLoadOperation() {
-  const payload = await measurementJson(`/api/measurements/operation?${measurementQuery()}`);
+  const [payload, colorPayload] = await Promise.all([
+    measurementJson(`/api/measurements/operation?${measurementQuery()}`),
+    measurementJson(`/api/measurements/jobs-by-color?location=${encodeURIComponent(measurementPage.location)}`),
+  ]);
   const jobsLayout = measurementLayout("", "Jobs");
   jobsLayout.barmode = "stack";
   const countLayout = measurementLayout("", "Measurements");
   countLayout.barmode = "stack";
   Plotly.react("measurementJobsChart", measurementGroupedTraces(payload.rows, "jobs"), jobsLayout, measurementPlotConfig);
   Plotly.react("measurementCountChart", measurementGroupedTraces(payload.rows, "measurements"), countLayout, measurementPlotConfig);
+  const colorRows = [...colorPayload.rows].reverse();
+  const colorLayout = measurementLayout("", "");
+  colorLayout.margin = { ...colorLayout.margin, l: 130, b: 62 };
+  colorLayout.xaxis = { ...colorLayout.xaxis, title: { text: "Jobs" }, tickangle: 0, dtick: 1 };
+  colorLayout.yaxis = { ...colorLayout.yaxis, title: undefined, type: "category" };
+  colorLayout.height = Math.max(300, colorRows.length * 38 + 120);
+  Plotly.react(
+    "measurementColorJobsChart",
+    [{
+      type: "bar",
+      orientation: "h",
+      x: colorRows.map((row) => row.jobs),
+      y: colorRows.map((row) => row.color),
+      text: colorRows.map((row) => measurementFormatNumber(row.jobs)),
+      textposition: "auto",
+      hovertemplate: "%{y}: %{x} jobs<extra></extra>",
+      marker: { color: measurementPalette[0] },
+    }],
+    colorLayout,
+    measurementPlotConfig,
+  );
 }
 
 async function measurementLoadThickness() {
@@ -291,7 +315,7 @@ function measurementRenderPerformance() {
   const isPercentage = measurementPage.performanceMode === "percentage";
   const title = isPercentage
     ? "Alignment and valid measurement rates"
-    : "Valid measurements per day";
+    : "Aligned and valid measurements per day";
   measurementElement("measurementPerformanceChartTitle").textContent = title;
 
   let traces;
@@ -305,9 +329,11 @@ function measurementRenderPerformance() {
     layout.yaxis = { ...layout.yaxis, range: [0, 100], rangemode: undefined };
   } else {
     traces = [
-      { type: "bar", name: "Valid measurements", x: rows.map((row) => row.date), y: rows.map((row) => row.valid_count), marker: { color: measurementPalette[0] } },
+      { type: "bar", name: "Aligned measurements", x: rows.map((row) => row.date), y: rows.map((row) => row.aligned_count), marker: { color: measurementPalette[0] } },
+      { type: "bar", name: "Valid measurements", x: rows.map((row) => row.date), y: rows.map((row) => row.valid_count), marker: { color: measurementPalette[1] } },
     ];
-    layout = measurementLayout("", "Valid measurements");
+    layout = measurementLayout("", "Measurements");
+    layout.barmode = "group";
   }
   Plotly.react("measurementPerformanceChart", traces, layout, measurementPlotConfig);
 }

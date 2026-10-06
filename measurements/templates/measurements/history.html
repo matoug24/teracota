@@ -4,8 +4,8 @@
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <title>Measurement History - {{ system_name or location }}</title>
-    <link id="themeStylesheet" rel="stylesheet" href="/assets/{{ theme_css }}?v=20260923-issues" />
-    <link rel="stylesheet" href="/assets/measurements/history.css?v=20260924-summary" />
+    <link id="themeStylesheet" rel="stylesheet" href="/assets/{{ theme_css }}?v=20261006-records" />
+    <link rel="stylesheet" href="/assets/measurements/history.css?v=20261006-analytics" />
     <script src="/assets/measurements/vendor/plotly-basic-2.35.2.min.js"></script>
   </head>
   <body
@@ -74,6 +74,10 @@
               <h4 class="measurement-chart-heading">Recorded measurements per day</h4>
               <div id="measurementCountChart" class="measurement-chart"></div>
             </article>
+            <article class="measurement-chart-frame">
+              <h4 class="measurement-chart-heading">Jobs by color - last 30 days</h4>
+              <div id="measurementColorJobsChart" class="measurement-chart"></div>
+            </article>
           </div>
         </section>
 
@@ -100,7 +104,7 @@
             </div>
           </div>
           <article class="measurement-chart-frame">
-            <h4 id="measurementPerformanceChartTitle" class="measurement-chart-heading">Valid measurements per day</h4>
+            <h4 id="measurementPerformanceChartTitle" class="measurement-chart-heading">Aligned and valid measurements per day</h4>
             <div id="measurementPerformanceChart" class="measurement-chart measurement-chart-wide"></div>
           </article>
         </section>
@@ -119,6 +123,6 @@
       </main>
     </div>
     <div id="measurementError" class="measurement-error" role="alert" hidden></div>
-    <script src="/assets/measurements/history.js?v=20260924-performance"></script>
+    <script src="/assets/measurements/history.js?v=20261006-analytics"></script>
   </body>
 </html>

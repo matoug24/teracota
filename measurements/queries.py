@@ -176,6 +176,28 @@ def operation(client: str, filters: dict, aliases: list[str] | None = None) -> d
     return {"rows": [dict(row) for row in rows]}
 
 
+def jobs_by_color_last_30_days(client: str, today: date | None = None) -> dict:
+    end = today or date.today()
+    start = end - timedelta(days=29)
+    with connect(ANALYTICS_DB) as connection:
+        rows = connection.execute(
+            """
+            SELECT COALESCE(NULLIF(color,''),'Not specified') AS color,
+                   COUNT(*) AS jobs
+            FROM jobs
+            WHERE client=? AND job_date>=? AND job_date<=?
+            GROUP BY COALESCE(NULLIF(color,''),'Not specified')
+            ORDER BY jobs DESC,color
+            """,
+            (client, start.isoformat(), end.isoformat()),
+        ).fetchall()
+    return {
+        "start": start.isoformat(),
+        "end": end.isoformat(),
+        "rows": [dict(row) for row in rows],
+    }
+
+
 def performance(client: str, filters: dict, aliases: list[str] | None = None) -> dict:
     where, params = _arguments(filters, client, aliases)
     with connect(ANALYTICS_DB) as connection:
@@ -300,7 +322,7 @@ def metric_series(
                 {
                     "x": (
                         f"{row['job_date']} {row['job_time']} / "
-                        f"{row['car_id']} / {row['body_id']}"
+                        f"{row['car_id']} / {row['body_id']} / {row['id']}"
                     ),
                     "date": row["job_date"],
                     "car_id": row["car_id"],
@@ -317,22 +339,21 @@ def metric_series(
         return {"points": points, "truncated": truncated}
 
     groups = defaultdict(list)
-    labels = {}
     for row in rows:
         period = row["job_date"]
         if view == "weekly":
             job_date = date.fromisoformat(row["job_date"])
             period = (job_date - timedelta(days=job_date.weekday())).isoformat()
-        key = (period, row["metric_key"], row["layer_count"])
+        label = _metric_label(row["metric_key"], row["layer_count"], config)
+        key = (period, label)
         groups[key].append(row)
-        labels[key] = _metric_label(row["metric_key"], row["layer_count"], config)
     points = []
     for key in sorted(groups):
         points.append(
             {
                 "x": key[0],
                 "date": key[0],
-                "series": labels[key],
+                "series": key[1],
                 **_combine(groups[key]),
             }
         )

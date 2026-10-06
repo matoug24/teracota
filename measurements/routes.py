@@ -18,6 +18,7 @@ from .config import (
 from .database import ANALYTICS_DB, UPLOAD_DB, quick_check
 from .queries import (
     discovered_sources,
+    jobs_by_color_last_30_days,
     metric_series,
     operation,
     options,
@@ -111,6 +112,11 @@ def create_blueprint(theme_getter):
     def api_operation():
         location, aliases = query_context()
         return jsonify(operation(location, filters(), aliases))
+
+    @blueprint.get("/api/measurements/jobs-by-color")
+    def api_jobs_by_color():
+        location, _ = query_context()
+        return jsonify(jobs_by_color_last_30_days(location))
 
     @blueprint.get("/api/measurements/performance")
     def api_performance():

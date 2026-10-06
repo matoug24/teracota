@@ -396,6 +396,9 @@ class MeasurementIntegrationTests(unittest.TestCase):
         self.assertIn("2026-09-23 | 0 | 0 | 0.0% | 0.0%", daily["body_text"])
         self.assertIn("<table", daily["body_html"])
         self.assertIn("Robot 1", daily["body_html"])
+        self.assertNotIn("display:none", daily["body_html"])
+        self.assertNotIn("display:inline-block", daily["body_html"])
+        self.assertNotIn("background:#12747b;color:#ffffff", daily["body_html"])
         self.assertNotIn("Site visits", daily["body_text"])
 
         sent_messages = []

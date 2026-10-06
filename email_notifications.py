@@ -361,14 +361,13 @@ def _queue_message(
 def _email_document(title: str, subtitle: str, content: str, link_text: str, link_url: str) -> str:
     return f"""<!doctype html>
 <html><body style="margin:0;background:#f3f6f7;color:#17262d;font-family:Arial,sans-serif">
-<div style="display:none;max-height:0;overflow:hidden">{escape(subtitle)}</div>
 <div style="max-width:720px;margin:0 auto;padding:28px 16px">
   <div style="border-top:5px solid #12747b;background:#ffffff;padding:26px;border-radius:7px">
     <div style="font-size:12px;font-weight:700;letter-spacing:.08em;color:#5f7078;text-transform:uppercase">TeraCota 2000</div>
     <h1 style="margin:8px 0 4px;font-size:24px;line-height:1.2;color:#10252f">{escape(title)}</h1>
     <p style="margin:0 0 22px;color:#5f7078">{escape(subtitle)}</p>
     {content}
-    <p style="margin:24px 0 0"><a href="{escape(link_url, quote=True)}" style="display:inline-block;background:#12747b;color:#ffffff;text-decoration:none;font-weight:700;padding:11px 16px;border-radius:5px">{escape(link_text)}</a></p>
+    <p style="margin:24px 0 0;padding-top:16px;border-top:1px solid #e3eaed"><a href="{escape(link_url, quote=True)}" style="color:#12747b;text-decoration:underline;font-weight:700">{escape(link_text)}</a></p>
   </div>
 </div></body></html>"""
 

@@ -258,7 +258,16 @@ async function measurementLoadOperation() {
   const colorRows = [...colorPayload.rows].reverse();
   const colorLayout = measurementLayout("", "");
   colorLayout.margin = { ...colorLayout.margin, l: 130, b: 62 };
-  colorLayout.xaxis = { ...colorLayout.xaxis, title: { text: "Jobs" }, tickangle: 0, dtick: 1 };
+  colorLayout.xaxis = {
+    ...colorLayout.xaxis,
+    title: { text: "Jobs" },
+    tickangle: 0,
+    tickmode: "auto",
+    nticks: 6,
+    tickformat: ",d",
+    separatethousands: true,
+    rangemode: "tozero",
+  };
   colorLayout.yaxis = { ...colorLayout.yaxis, title: undefined, type: "category" };
   colorLayout.height = Math.max(300, colorRows.length * 38 + 120);
   Plotly.react(

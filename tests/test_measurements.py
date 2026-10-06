@@ -324,6 +324,66 @@ class MeasurementIntegrationTests(unittest.TestCase):
         self.assertIn("Site visit", immediate["subject"])
         self.assertIn("Verified reference response", immediate["body_text"])
 
+        visit_record = app_module.query_one(
+            "SELECT id FROM maintenance_records WHERE summary=?",
+            ("Verified reference response.",),
+        )
+        edited_visit = self.client.put(
+            f"/api/maintenance/{visit_record['id']}",
+            json={
+                "date": "2026-09-24",
+                "engineer": "Test Engineer",
+                "type": ["Calibration"],
+                "summary": "Verified reference response and saved results.",
+            },
+        )
+        self.assertEqual(edited_visit.status_code, 200)
+        visit_email = app_module.query_one(
+            "SELECT * FROM email_outbox WHERE notification_type='UPDATE' ORDER BY id DESC LIMIT 1"
+        )
+        self.assertIn("Site visit edited", visit_email["subject"])
+        self.assertIn(
+            "Summary: Verified reference response. -> Verified reference response and saved results.",
+            visit_email["body_text"],
+        )
+
+        reported_issue = self.client.post(
+            f"/api/systems/{robot_one['id']}/issues",
+            json={
+                "system_ids": [robot_one["id"]],
+                "title": "Notification test issue",
+                "severity": "Low",
+                "opened": "2026-09-24",
+                "status": "Open",
+                "reported_by": "Test Engineer",
+                "related_to": ["Software"],
+                "notes": "Initial issue notes.",
+            },
+        )
+        self.assertEqual(reported_issue.status_code, 200)
+        issue = app_module.query_one(
+            "SELECT id FROM system_issues WHERE title='Notification test issue'"
+        )
+        edited_issue = self.client.put(
+            f"/api/issues/{issue['id']}",
+            json={
+                "system_ids": [robot_one["id"]],
+                "title": "Notification test issue",
+                "severity": "Medium",
+                "opened": "2026-09-24",
+                "status": "Open",
+                "reported_by": "Test Engineer",
+                "related_to": ["Software"],
+                "notes": "Initial issue notes.",
+            },
+        )
+        self.assertEqual(edited_issue.status_code, 200)
+        issue_email = app_module.query_one(
+            "SELECT * FROM email_outbox WHERE notification_type='UPDATE' ORDER BY id DESC LIMIT 1"
+        )
+        self.assertIn("Issue edited", issue_email["subject"])
+        self.assertIn("Severity: Low -> Medium", issue_email["body_text"])
+
         self.assertEqual(queue_daily_summaries(MAIN_DB, date(2026, 9, 24)), 1)
         self.assertEqual(queue_daily_summaries(MAIN_DB, date(2026, 9, 24)), 0)
         daily = app_module.query_one(
@@ -358,8 +418,8 @@ class MeasurementIntegrationTests(unittest.TestCase):
 
         with patch("email_notifications.smtplib.SMTP_SSL", FakeSmtp):
             sent, failed = deliver_pending(MAIN_DB)
-        self.assertEqual((sent, failed), (2, 0))
-        self.assertEqual(len(sent_messages), 2)
+        self.assertEqual((sent, failed), (5, 0))
+        self.assertEqual(len(sent_messages), 5)
         recipients_by_subject = {
             "daily" if "Daily measurement summary" in message["Subject"] else "update": message["To"]
             for message in sent_messages

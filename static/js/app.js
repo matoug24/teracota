@@ -253,7 +253,7 @@ function applyTheme() {
     "control-room": "control_room.css",
     instrument: "instrument.css",
   };
-  const nextHref = `/assets/css/${filenames[theme.id] || filenames.standard}?v=20260923-issues`;
+  const nextHref = `/assets/css/${filenames[theme.id] || filenames.standard}?v=20261006-tabs`;
   if (!themeStylesheet.href.endsWith(nextHref)) themeStylesheet.href = nextHref;
 }
 

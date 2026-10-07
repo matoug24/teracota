@@ -587,7 +587,6 @@ def _health_warning_items(health: dict) -> list[tuple[str, str]]:
     memory = health.get("memory") or {}
     cpu = health.get("cpu") or {}
     disk = health.get("disk") or {}
-    measurements = health.get("measurements") or {}
     memory_percent = memory.get("used_percent")
     swap_percent = memory.get("swap_used_percent")
     load = cpu.get("load_1m")
@@ -612,9 +611,6 @@ def _health_warning_items(health: dict) -> list[tuple[str, str]]:
         warnings.append(
             ("measurement-disk", f"Measurement disk usage is {float(measurement_percent):.1f}%")
         )
-    failed = int(measurements.get("failed_batches") or 0)
-    if failed:
-        warnings.append(("failed-imports", f"{failed} measurement import batch(es) failed"))
     return warnings
 
 
@@ -711,6 +707,12 @@ def queue_health_warning(database_path: str | Path) -> int:
                 "\n".join(text_lines),
                 body_html,
             )
+        elif previous_signature == "failed-imports":
+            connection.execute(
+                "UPDATE health_alert_state SET active_signature='',last_queued_at='',updated_at=? WHERE id=1",
+                (_iso(now),),
+            )
+            return 0
         elif previous_signature:
             _queue_message(
                 connection,

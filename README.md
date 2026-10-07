@@ -168,8 +168,10 @@ decision changes. They are intentionally accessed by route.
 The admin page is divided into Monitoring, Locations, Systems, Settings, and
 Recovery. Configure recipients under **Locations > Email Notifications**. Each
 email address independently selects operational updates, daily summaries, or
-both. Operational-update recipients also receive server-health warning and
-recovery emails. Only locations that currently contain systems are shown.
+both. Operational-update recipients also receive server resource warning and
+recovery emails. Failed measurement-import batches remain visible in Admin
+diagnostics but do not trigger health-warning emails. Only locations that
+currently contain systems are shown.
 SMTP credentials remain in the server-only `.env` file and are never returned
 to the browser or stored in the database.
 

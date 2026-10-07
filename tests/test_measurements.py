@@ -456,6 +456,26 @@ class MeasurementIntegrationTests(unittest.TestCase):
             **high_health,
             "memory": {"used_percent": 40, "swap_used_percent": 5},
         }
+        failed_import_only = {
+            **healthy,
+            "measurements": {"failed_batches": 5},
+        }
+        with patch("server_monitoring.collect_server_health", return_value=failed_import_only):
+            self.assertEqual(queue_health_warning(MAIN_DB), 0)
+        app_module.execute(
+            """
+            INSERT INTO health_alert_state(id,active_signature,last_queued_at,updated_at)
+            VALUES(1,'failed-imports','2026-10-07T00:00:00Z','2026-10-07T00:00:00Z')
+            ON CONFLICT(id) DO UPDATE SET active_signature='failed-imports',
+                last_queued_at='2026-10-07T00:00:00Z',updated_at='2026-10-07T00:00:00Z'
+            """
+        )
+        with patch("server_monitoring.collect_server_health", return_value=failed_import_only):
+            self.assertEqual(queue_health_warning(MAIN_DB), 0)
+        cleared = app_module.query_one(
+            "SELECT active_signature FROM health_alert_state WHERE id=1"
+        )
+        self.assertEqual(cleared["active_signature"], "")
         with patch("server_monitoring.collect_server_health", return_value=high_health):
             self.assertEqual(queue_health_warning(MAIN_DB), 1)
             self.assertEqual(queue_health_warning(MAIN_DB), 0)

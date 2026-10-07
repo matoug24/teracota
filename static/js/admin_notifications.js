@@ -70,7 +70,7 @@
           </form>
         `).join("") : '<div class="admin-empty-state"><strong>No locations</strong><span>Add a system before configuring a notification team.</span></div>'}
       </div>
-      <p class="muted admin-help">The daily email compares the previous calendar day with the two days before it. Recipients of Operational updates also receive deduplicated server-health warnings and recovery notices.</p>
+      <p class="muted admin-help">The daily email compares the previous calendar day with the two days before it. Recipients of Operational updates also receive deduplicated server resource warnings and recovery notices. Measurement import failures remain available in Server Health and are not emailed.</p>
     `;
 
     root.querySelectorAll("[data-notification-location]").forEach((form) => {

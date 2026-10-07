@@ -484,7 +484,7 @@ After TeraCota starts, open `/admin`, select **Locations**, and configure each
 location independently:
 
 1. Add each team address as its own recipient row.
-2. For each address, select **Operational updates**, **Daily 5 AM summary**, or both. Operational-update recipients also receive server-health warnings and recovery notices.
+2. For each address, select **Operational updates**, **Daily 5 AM summary**, or both. Operational-update recipients also receive server resource warnings and recovery notices. Failed measurement-import batches stay visible in Admin diagnostics and do not generate health-warning email.
 3. Save that location.
 
 Only locations with at least one current system appear in this list. Existing

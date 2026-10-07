@@ -695,7 +695,7 @@ def record_page_visit():
 
 
 def clean_categories(value):
-    allowed = ["Calibration", "Alignment", "Commissioning", "Troubleshooting"]
+    allowed = ["Calibration", "Alignment", "Commissioning", "Troubleshooting", "Other"]
     aliases = {"optics": "Alignment"}
     values = value if isinstance(value, list) else str(value or "").split(",")
     selected = []

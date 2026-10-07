@@ -312,7 +312,7 @@ class MeasurementIntegrationTests(unittest.TestCase):
                 "system_ids": [robot_one["id"]],
                 "date": "2026-09-24",
                 "engineer": "Test Engineer",
-                "type": ["Calibration"],
+                "type": ["Calibration", "Other"],
                 "summary": "Verified reference response.",
             },
         )
@@ -323,6 +323,7 @@ class MeasurementIntegrationTests(unittest.TestCase):
         self.assertEqual(immediate["location"], "Client Plant")
         self.assertIn("Site visit", immediate["subject"])
         self.assertIn("Verified reference response", immediate["body_text"])
+        self.assertIn("Visit purpose: Calibration, Other", immediate["body_text"])
 
         visit_record = app_module.query_one(
             "SELECT id FROM maintenance_records WHERE summary=?",
@@ -333,7 +334,7 @@ class MeasurementIntegrationTests(unittest.TestCase):
             json={
                 "date": "2026-09-24",
                 "engineer": "Test Engineer",
-                "type": ["Calibration"],
+                "type": ["Calibration", "Other"],
                 "summary": "Verified reference response and saved results.",
             },
         )

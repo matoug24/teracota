@@ -29,6 +29,7 @@ os.environ.update(
         "TERACOTA_SMTP_APP_PASSWORD": "test-app-password",
         "TERACOTA_SMTP_FROM": "notifications@example.com",
         "TERACOTA_SEED_DEMO": "false",
+        "TERACOTA_ONLINE": "true",
     }
 )
 
@@ -93,6 +94,81 @@ class MeasurementIntegrationTests(unittest.TestCase):
         )
         self.assertEqual(response.status_code, 400)
         self.assertIn("existing location", response.get_json()["error"])
+
+    def test_offline_mode_blocks_browser_access_before_authentication(self):
+        with patch.dict(app_module.app.config, {"TERACOTA_ONLINE": False}):
+            for client in (app_module.app.test_client(), self.client):
+                for method, path in (
+                    ("GET", "/"),
+                    ("GET", "/login"),
+                    ("POST", "/login"),
+                    ("GET", "/admin"),
+                    ("GET", "/measurements/location/Client%20Plant"),
+                    ("GET", "/measurements/files/Client%20Plant"),
+                    ("GET", "/assets/js/app.js"),
+                    ("GET", "/does-not-exist"),
+                    ("GET", "/api/admin/server-health"),
+                    ("POST", "/api/login"),
+                    ("POST", "/api/systems"),
+                ):
+                    with self.subTest(method=method, path=path, client=client):
+                        response = client.open(path, method=method)
+                        self.assertEqual(response.status_code, 503)
+                        self.assertEqual(response.mimetype, "text/html")
+                        self.assertEqual(response.headers["Cache-Control"], "no-store")
+                        self.assertIn("503 Service Unavailable", response.get_data(as_text=True))
+                        self.assertNotIn("Location", response.headers)
+
+        self.assertEqual(self.client.get("/").status_code, 200)
+        self.assertEqual(app_module.app.test_client().get("/login").status_code, 200)
+
+    def test_offline_mode_preserves_token_protected_client_uploads(self):
+        client = app_module.app.test_client()
+        headers = {"Authorization": "Bearer test-measurement-token-longer-than-24-characters"}
+        sample = ROOT / "tests" / "fixtures" / "2613616_W6_13_2_25529_R7_(2026-03-23 01;37;39).csv"
+        with patch.dict(app_module.app.config, {"TERACOTA_ONLINE": False}):
+            self.assertEqual(client.get("/healthz").status_code, 200)
+            configuration = client.get("/api/uploads/configuration", headers=headers)
+            self.assertEqual(configuration.status_code, 200)
+            self.assertIn("Client Plant", configuration.get_json()["clients"])
+            prepared = client.post(
+                "/api/uploads/prepare",
+                headers=headers,
+                json={
+                    "client": "Client Plant",
+                    "source_id": "offline-test-pc",
+                    "files": [{"name": sample.name, "size": sample.stat().st_size, "sha256": sha256_path(sample)}],
+                },
+            )
+            self.assertEqual(prepared.status_code, 201)
+            payload = prepared.get_json()
+            batch_id = payload["batch_id"]
+            content_path = f'/api/uploads/{batch_id}/{payload["items"][0]["id"]}/content'
+            uploaded = client.put(content_path, headers=headers, data=sample.read_bytes())
+            self.assertEqual(uploaded.status_code, 204)
+            completed = client.post(f"/api/uploads/{batch_id}/complete", headers=headers, json={})
+            self.assertEqual(completed.status_code, 200)
+            self.assertEqual(completed.get_json()["status"], "VERIFIED")
+            receipt = client.get(f"/api/uploads/{batch_id}", headers=headers)
+            self.assertEqual(receipt.status_code, 200)
+            self.assertEqual(receipt.get_json()["status"], "VERIFIED")
+            for method, path in (
+                ("GET", "/api/uploads/configuration"),
+                ("POST", "/api/uploads/prepare"),
+                ("PUT", content_path),
+                ("POST", f"/api/uploads/{batch_id}/complete"),
+                ("GET", f"/api/uploads/{batch_id}"),
+            ):
+                with self.subTest(method=method, path=path):
+                    self.assertEqual(client.open(path, method=method).status_code, 401)
+                    self.assertEqual(client.open(path, method=method, headers={"Authorization": "Bearer invalid"}).status_code, 401)
+
+    def test_online_environment_flag(self):
+        with patch.dict(os.environ, {}, clear=True):
+            self.assertTrue(app_module.env_flag("TERACOTA_ONLINE", True))
+        for value, expected in (("true", True), ("false", False), (" TRUE ", True)):
+            with patch.dict(os.environ, {"TERACOTA_ONLINE": value}):
+                self.assertEqual(app_module.env_flag("TERACOTA_ONLINE", True), expected)
 
     def test_reorganized_templates_and_assets_are_served(self):
         self.assertEqual(self.client.get("/healthz").status_code, 200)

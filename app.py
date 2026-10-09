@@ -7,8 +7,12 @@ import os
 import sqlite3
 from urllib.parse import urlsplit
 
+from dotenv import load_dotenv
 from flask import Flask, Response, abort, jsonify, redirect, render_template, request, session, url_for
 from werkzeug.middleware.proxy_fix import ProxyFix
+
+BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+load_dotenv(os.path.join(BASE_DIR, ".env"), override=False)
 
 from email_notifications import (
     create_notification_blueprint,
@@ -36,7 +40,6 @@ from server_monitoring import (
 )
 
 
-BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 DATABASE = os.environ.get(
     "TERACOTA_DB_PATH",
     os.path.join(BASE_DIR, "teracota.sqlite3"),
@@ -62,12 +65,30 @@ app = Flask(
     static_url_path="/assets",
 )
 app.config.update(
+    TERACOTA_ONLINE=env_flag("TERACOTA_ONLINE", True),
     SECRET_KEY=os.environ.get("TERACOTA_SECRET_KEY", DEFAULT_SECRET_KEY),
     MAX_CONTENT_LENGTH=max(10 * 1024 * 1024, MEASUREMENT_MAX_UPLOAD_BYTES),
     SESSION_COOKIE_HTTPONLY=True,
     SESSION_COOKIE_SAMESITE="Lax",
     SESSION_COOKIE_SECURE=env_flag("TERACOTA_COOKIE_SECURE", PRODUCTION),
 )
+
+
+@app.before_request
+def enforce_online_mode():
+    backend_request = (
+        request.blueprint == "measurement_uploads"
+        or request.endpoint == "health_check"
+    )
+    if not app.config["TERACOTA_ONLINE"] and not backend_request:
+        return Response(
+            render_template("offline.html"),
+            status=503,
+            mimetype="text/html",
+            headers={"Cache-Control": "no-store"},
+        )
+
+
 if env_flag("TERACOTA_BEHIND_PROXY"):
     app.wsgi_app = ProxyFix(app.wsgi_app, x_for=1, x_proto=1, x_host=1)
 configure_application_logging(app, DATABASE)

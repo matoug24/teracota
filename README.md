@@ -112,8 +112,9 @@ Without environment variables, local development uses:
 | Demo records | Added only when the database is initially empty |
 | Web address | `http://127.0.0.1:8765` |
 
-`app.py` does not automatically read a local `.env` file. For a customized
-local session, set variables in PowerShell before starting the app:
+`app.py` reads `.env` in the project root automatically. Existing environment
+variables take precedence over values in the file. For a customized local
+session, you can also set variables in PowerShell before starting the app:
 
 ```powershell
 $env:TERACOTA_USERNAME = "teraview"
@@ -126,6 +127,30 @@ python app.py
 
 The production systemd service reads `/opt/teracota/.env` directly. See the
 installation guide for production values and permissions.
+
+### Temporarily disable browser access
+
+Set this in `.env` (online by default if omitted):
+
+```dotenv
+TERACOTA_ONLINE=false
+```
+
+Restart the app after changing this setting. On the production server, run
+`sudo systemctl restart teracota`. Browser pages, login, assets, and dashboard
+APIs return a standalone offline notice with HTTP 503 and `Cache-Control: no-store`.
+Existing signed-in sessions cannot bypass the notice. Client upload endpoints
+under `/api/uploads/` remain available with their existing Bearer token protection,
+including configuration, file transfer, verification, and receipts. `/healthz`
+also remains available for health checks.
+The unstyled page says: "503 Service Unavailable" and
+"The service is temporarily unavailable."
+
+To restore access, set `TERACOTA_ONLINE=true` and restart again. This switch
+disables browser access to that instance; scheduled measurement imports and emails
+continue when their timers are enabled. It does not create a downloadable offline
+app. A separate local instance can keep
+`TERACOTA_ONLINE=true` for local use.
 
 ## Data storage
 

@@ -1,10 +1,13 @@
 import csv
 from datetime import date, datetime, timezone
 import hmac
+import hashlib
 import io
 import json
 import os
+import secrets
 import sqlite3
+import time
 from urllib.parse import urlsplit
 
 from dotenv import load_dotenv
@@ -66,6 +69,7 @@ app = Flask(
 )
 app.config.update(
     TERACOTA_ONLINE=env_flag("TERACOTA_ONLINE", True),
+    TERACOTA_CONTROL_PASSWORD=os.environ.get("TERACOTA_CONTROL_PASSWORD", ""),
     SECRET_KEY=os.environ.get("TERACOTA_SECRET_KEY", DEFAULT_SECRET_KEY),
     MAX_CONTENT_LENGTH=max(10 * 1024 * 1024, MEASUREMENT_MAX_UPLOAD_BYTES),
     SESSION_COOKIE_HTTPONLY=True,
@@ -78,9 +82,9 @@ app.config.update(
 def enforce_online_mode():
     backend_request = (
         request.blueprint == "measurement_uploads"
-        or request.endpoint == "health_check"
+        or request.endpoint in {"health_check", "website_control"}
     )
-    if not app.config["TERACOTA_ONLINE"] and not backend_request:
+    if not backend_request and not website_is_online():
         return Response(
             render_template("offline.html"),
             status=503,
@@ -169,6 +173,13 @@ def query_one(statement, parameters=()):
     with get_db() as db:
         row = db.execute(statement, parameters).fetchone()
         return dict(row) if row else None
+
+
+def website_is_online():
+    if not app.config["TERACOTA_ONLINE"]:
+        return False
+    setting = query_one("SELECT value FROM app_settings WHERE key = 'website_online'")
+    return setting is None or setting["value"] == "true"
 
 
 def ensure_column(table, column, definition):
@@ -621,7 +632,7 @@ def safe_next_url(value):
 
 @app.before_request
 def enforce_authentication():
-    public_endpoints = {"login_page", "login", "health_check"}
+    public_endpoints = {"login_page", "login", "health_check", "website_control"}
     if (
         is_authenticated()
         or request.endpoint in public_endpoints
@@ -1086,6 +1097,74 @@ def open_issues_page():
     return render_page("issues")
 
 
+@app.route("/website-control", methods=["GET", "POST"])
+def website_control():
+    password = app.config["TERACOTA_CONTROL_PASSWORD"]
+    if not password:
+        return Response("Website control is not configured.", status=503, mimetype="text/plain")
+
+    credential = hmac.new(
+        app.config["SECRET_KEY"].encode(), password.encode(), hashlib.sha256
+    ).hexdigest()
+    authenticated = (
+        hmac.compare_digest(str(session.get("control_credential", "")), credential)
+        and session.get("control_expires", 0) > time.time()
+    )
+    csrf_token = session.setdefault("control_csrf", secrets.token_urlsafe(32))
+    error = ""
+    status = 200
+    if request.method == "POST":
+        if not hmac.compare_digest(request.form.get("csrf_token", "").encode(), csrf_token.encode()):
+            abort(400)
+        action = request.form.get("action")
+        if action == "login":
+            if hmac.compare_digest(request.form.get("password", "").encode(), password.encode()):
+                session["control_credential"] = credential
+                session["control_expires"] = time.time() + 1800
+                session["control_csrf"] = secrets.token_urlsafe(32)
+                return redirect(url_for("website_control"), code=303)
+            error = "Invalid admin password."
+            status = 401
+        else:
+            if not authenticated:
+                abort(401)
+            if action == "logout":
+                for key in ("control_credential", "control_expires", "control_csrf"):
+                    session.pop(key, None)
+                return redirect(url_for("website_control"), code=303)
+            if action not in {"enable", "disable"}:
+                abort(400)
+            if action == "enable" and not app.config["TERACOTA_ONLINE"]:
+                error = "The environment override is disabling the website. Set TERACOTA_ONLINE=true and restart the app first."
+                status = 409
+            else:
+                execute(
+                    "INSERT INTO app_settings (key, value) VALUES ('website_online', ?) "
+                    "ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+                    ("true" if action == "enable" else "false",),
+                )
+                app.logger.info("Website browser access %sd from %s", action, request.remote_addr or "unknown")
+                return redirect(url_for("website_control"), code=303)
+    return render_template(
+        "website_control.html",
+        authenticated=authenticated,
+        csrf_token=csrf_token,
+        error=error,
+        online=website_is_online() if authenticated else None,
+        environment_online=app.config["TERACOTA_ONLINE"],
+    ), status
+
+
+@app.after_request
+def protect_website_control_response(response):
+    if request.endpoint == "website_control":
+        response.headers["Cache-Control"] = "no-store"
+        response.headers["X-Frame-Options"] = "DENY"
+        response.headers["Content-Security-Policy"] = "default-src 'none'; form-action 'self'; frame-ancestors 'none'; base-uri 'none'"
+        response.headers["Referrer-Policy"] = "no-referrer"
+    return response
+
+
 @app.route("/login", methods=["GET", "POST"])
 def login_page():
     next_url = safe_next_url(request.values.get("next"))
@@ -1240,6 +1319,9 @@ def import_database_csv():
     db = get_db()
     try:
         db.execute("BEGIN IMMEDIATE")
+        website_setting = db.execute(
+            "SELECT value FROM app_settings WHERE key = 'website_online'"
+        ).fetchone()
         table_columns = {
             table: {column["name"] for column in db.execute(f"PRAGMA table_info({table})").fetchall()}
             for table in EXPORT_TABLES
@@ -1258,8 +1340,15 @@ def import_database_csv():
         imported_rows = 0
         for table in EXPORT_TABLES:
             for row in rows_by_table[table]:
+                if table == "app_settings" and row.get("key") == "website_online":
+                    continue
                 insert_database_row(db, table, row)
                 imported_rows += 1
+        if website_setting is not None:
+            db.execute(
+                "INSERT INTO app_settings (key, value) VALUES ('website_online', ?)",
+                (website_setting["value"],),
+            )
         db.commit()
     except (sqlite3.Error, ValueError) as error:
         db.rollback()

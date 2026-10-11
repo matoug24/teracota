@@ -130,6 +130,23 @@ installation guide for production values and permissions.
 
 ### Temporarily disable browser access
 
+For immediate changes without restarting, use the separate control page:
+
+1. Configure a separate strong `TERACOTA_CONTROL_PASSWORD` in `.env` and keep
+   `TERACOTA_ONLINE=true`. Restart the app once to load these settings.
+2. Open `/website-control` (for production, `https://teracota.matoug.com/website-control`)
+   and sign in with that admin password. The ordinary app password does not grant access.
+3. Select **Disable website** or **Enable website**. Changes are saved in the
+   operations database and apply immediately across server workers and survive restarts.
+
+The control page remains available while browser access is disabled. Admin sessions
+expire after 30 minutes; sign in again to continue. If `TERACOTA_CONTROL_PASSWORD`
+is unset, this page is disabled. State changes require a signed-in admin and a
+session CSRF token. Client uploads, health checks, and scheduled jobs remain available.
+CSV backup restores preserve the current availability setting instead of changing it.
+
+The `.env` switch remains an emergency override:
+
 Set this in `.env` (online by default if omitted):
 
 ```dotenv
@@ -146,7 +163,9 @@ also remains available for health checks.
 The unstyled page says: "503 Service Unavailable" and
 "The service is temporarily unavailable."
 
-To restore access, set `TERACOTA_ONLINE=true` and restart again. This switch
+When `TERACOTA_ONLINE=false`, the control page cannot enable browser access.
+Set it back to `true` and restart to remove the override, then enable the website
+on the control page if its saved switch is disabled. This switch
 disables browser access to that instance; scheduled measurement imports and emails
 continue when their timers are enabled. It does not create a downloadable offline
 app. A separate local instance can keep

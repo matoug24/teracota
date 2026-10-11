@@ -1,4 +1,6 @@
+import csv
 import io
+import json
 from datetime import date
 import os
 from pathlib import Path
@@ -169,6 +171,92 @@ class MeasurementIntegrationTests(unittest.TestCase):
         for value, expected in (("true", True), ("false", False), (" TRUE ", True)):
             with patch.dict(os.environ, {"TERACOTA_ONLINE": value}):
                 self.assertEqual(app_module.env_flag("TERACOTA_ONLINE", True), expected)
+
+    def control_token(self, client):
+        client.get("/website-control")
+        with client.session_transaction() as session:
+            return session["control_csrf"]
+
+    def test_control_switch_persists_and_stays_accessible_during_downtime(self):
+        self.addCleanup(app_module.execute, "DELETE FROM app_settings WHERE key = 'website_online'")
+        admin = app_module.app.test_client()
+        with patch.dict(app_module.app.config, {"TERACOTA_CONTROL_PASSWORD": "separate-admin-password"}):
+            token = self.control_token(admin)
+            response = admin.post("/website-control", data={"action": "login", "password": "separate-admin-password", "csrf_token": token})
+            self.assertEqual(response.status_code, 303)
+            token = self.control_token(admin)
+            response = admin.post("/website-control", data={"action": "disable", "csrf_token": token})
+            self.assertEqual(response.status_code, 303)
+            self.assertFalse(app_module.website_is_online())
+            self.assertEqual(app_module.query_one("SELECT value FROM app_settings WHERE key = 'website_online'")["value"], "false")
+            self.assertEqual(self.client.get("/").status_code, 503)
+            self.assertEqual(app_module.app.test_client().get("/login").status_code, 503)
+            self.assertEqual(admin.get("/website-control").status_code, 200)
+            self.assertEqual(app_module.app.test_client().get("/website-control").status_code, 200)
+            self.assertEqual(admin.get("/healthz").status_code, 200)
+            headers = {"Authorization": "Bearer test-measurement-token-longer-than-24-characters"}
+            self.assertEqual(admin.get("/api/uploads/configuration", headers=headers).status_code, 200)
+            response = admin.post("/website-control", data={"action": "enable", "csrf_token": token})
+            self.assertEqual(response.status_code, 303)
+            self.assertTrue(app_module.website_is_online())
+            self.assertEqual(self.client.get("/").status_code, 200)
+            response = admin.post("/website-control", data={"action": "logout", "csrf_token": token})
+            self.assertEqual(response.status_code, 303)
+            token = self.control_token(admin)
+            self.assertEqual(admin.post("/website-control", data={"action": "disable", "csrf_token": token}).status_code, 401)
+
+    def test_control_requires_separate_credentials_and_csrf(self):
+        with patch.dict(app_module.app.config, {"TERACOTA_CONTROL_PASSWORD": "separate-admin-password"}):
+            # An ordinary signed-in user cannot toggle browser access.
+            token = self.control_token(self.client)
+            self.assertEqual(self.client.post("/website-control", data={"action": "disable", "csrf_token": token}).status_code, 401)
+            self.assertEqual(self.client.post("/website-control", data={"action": "login", "password": "incorrect", "csrf_token": token}).status_code, 401)
+            self.assertEqual(self.client.post("/website-control", data={"action": "login", "password": "separate-admin-password"}).status_code, 400)
+            self.assertEqual(self.client.post("/website-control", data={"action": "login", "password": "separate-admin-password", "csrf_token": token}).status_code, 303)
+            self.assertEqual(self.client.post("/website-control", data={"action": "disable", "csrf_token": token}).status_code, 400)
+            with self.client.session_transaction() as session:
+                session["control_expires"] = 0
+            token = self.control_token(self.client)
+            self.assertEqual(self.client.post("/website-control", data={"action": "disable", "csrf_token": token}).status_code, 401)
+            page = self.client.get("/website-control")
+            self.assertEqual(page.headers["Cache-Control"], "no-store")
+            self.assertEqual(page.headers["X-Frame-Options"], "DENY")
+
+    def test_control_setting_cannot_be_changed_by_backup_import(self):
+        self.addCleanup(app_module.execute, "DELETE FROM app_settings WHERE key = 'website_online'")
+        app_module.execute("INSERT OR REPLACE INTO app_settings(key,value) VALUES('website_online','true')")
+        backup = self.client.get("/api/admin/export.csv").get_data(as_text=True)
+        rows = list(csv.DictReader(io.StringIO(backup)))
+        for row in rows:
+            if row["table"] == "app_settings" and row["record_type"] == "row":
+                setting = json.loads(row["data_json"])
+                if setting["key"] == "website_online":
+                    setting["value"] = "false"
+                    row["data_json"] = json.dumps(setting)
+        output = io.StringIO(newline="")
+        writer = csv.DictWriter(output, fieldnames=["record_type", "table", "data_json"])
+        writer.writeheader()
+        writer.writerows(rows)
+        response = self.client.post(
+            "/api/admin/import",
+            data={"file": (io.BytesIO(output.getvalue().encode()), "backup.csv")},
+        )
+        self.assertEqual(response.status_code, 200)
+        self.assertTrue(app_module.website_is_online())
+
+    def test_control_respects_environment_override_and_missing_password(self):
+        self.addCleanup(app_module.execute, "DELETE FROM app_settings WHERE key = 'website_online'")
+        admin = app_module.app.test_client()
+        with patch.dict(app_module.app.config, {"TERACOTA_CONTROL_PASSWORD": ""}):
+            self.assertEqual(admin.get("/website-control").status_code, 503)
+        with patch.dict(app_module.app.config, {"TERACOTA_CONTROL_PASSWORD": "separate-admin-password", "TERACOTA_ONLINE": False}):
+            token = self.control_token(admin)
+            self.assertEqual(admin.post("/website-control", data={"action": "login", "password": "separate-admin-password", "csrf_token": token}).status_code, 303)
+            token = self.control_token(admin)
+            self.assertEqual(admin.post("/website-control", data={"action": "enable", "csrf_token": token}).status_code, 409)
+            self.assertFalse(app_module.website_is_online())
+            with patch.dict(app_module.app.config, {"TERACOTA_CONTROL_PASSWORD": "rotated-admin-password"}):
+                self.assertEqual(admin.post("/website-control", data={"action": "disable", "csrf_token": token}).status_code, 401)
 
     def test_reorganized_templates_and_assets_are_served(self):
         self.assertEqual(self.client.get("/healthz").status_code, 200)

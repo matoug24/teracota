@@ -1,0 +1,37 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta name="robots" content="noindex, nofollow" />
+    <title>Website control</title>
+  </head>
+  <body>
+    <h1>Website control</h1>
+    {% if error %}<p role="alert">{{ error }}</p>{% endif %}
+    {% if authenticated %}
+    <p>Browser access is currently <strong>{{ 'enabled' if online else 'disabled' }}</strong>.</p>
+    <p>Client uploads, scheduled imports, and emails continue while browser access is disabled.</p>
+    {% if not environment_online %}
+    <p>The environment override is disabling the website. Set TERACOTA_ONLINE=true and restart the app to allow this page to enable access.</p>
+    {% endif %}
+    <form method="post" action="{{ url_for('website_control') }}">
+      <input type="hidden" name="csrf_token" value="{{ csrf_token }}" />
+      <button type="submit" name="action" value="{{ 'disable' if online else 'enable' }}" {% if not environment_online %}disabled{% endif %}>{{ 'Disable website' if online else 'Enable website' }}</button>
+    </form>
+    <p>Changes take effect immediately. Admin access expires after 30 minutes.</p>
+    <form method="post" action="{{ url_for('website_control') }}">
+      <input type="hidden" name="csrf_token" value="{{ csrf_token }}" />
+      <button type="submit" name="action" value="logout">Sign out</button>
+    </form>
+    {% else %}
+    <form method="post" action="{{ url_for('website_control') }}">
+      <input type="hidden" name="csrf_token" value="{{ csrf_token }}" />
+      <input type="hidden" name="action" value="login" />
+      <p><label for="password">Admin password</label></p>
+      <p><input id="password" name="password" type="password" autocomplete="current-password" required /></p>
+      <button type="submit">Sign in</button>
+    </form>
+    {% endif %}
+  </body>
+</html>

@@ -645,6 +645,81 @@ def enforce_authentication():
     return redirect(url_for("login_page", next=next_url))
 
 
+def control_password_credential():
+    password = app.config["TERACOTA_CONTROL_PASSWORD"]
+    if not password:
+        return ""
+    return hmac.new(
+        app.config["SECRET_KEY"].encode(), password.encode(), hashlib.sha256
+    ).hexdigest()
+
+
+def measurement_access_allowed():
+    credential = control_password_credential()
+    return bool(credential) and (
+        hmac.compare_digest(str(session.get("measurement_credential", "")), credential)
+        and session.get("measurement_expires", 0) > time.time()
+    )
+
+
+@app.before_request
+def enforce_measurement_access():
+    if not is_authenticated():
+        return None  # The normal site login runs first.
+    history_endpoints = {"measurements.location_history", "measurements.system_history"}
+    protected = (
+        request.blueprint == "measurement_files"
+        or (
+            request.blueprint == "measurements"
+            and request.endpoint != "measurements.static"
+            and not request.path.startswith("/api/measurements/admin/")
+        )
+    )
+    if not protected:
+        return None
+    history_page = request.endpoint in history_endpoints
+    error = ""
+    status = 200
+    if history_page and request.method == "POST":
+        csrf_token = session.get("measurement_csrf", "")
+        if not csrf_token or not hmac.compare_digest(
+            request.form.get("csrf_token", "").encode(), csrf_token.encode()
+        ):
+            abort(400)
+        password = app.config["TERACOTA_CONTROL_PASSWORD"]
+        if password and hmac.compare_digest(
+            request.form.get("password", "").encode(), password.encode()
+        ):
+            session["measurement_credential"] = control_password_credential()
+            session["measurement_expires"] = time.time() + 1800
+            session["measurement_csrf"] = secrets.token_urlsafe(32)
+            return redirect(request.path, code=303)
+        error = "Unable to continue."
+        status = 401
+    if not error and measurement_access_allowed():
+        return None
+    if history_page or request.endpoint == "measurement_files.raw_files_page":
+        return render_template(
+            "measurements/unavailable.html",
+            theme_css=THEME_FILES[get_active_theme()],
+            csrf_token=session.setdefault("measurement_csrf", secrets.token_urlsafe(32)),
+            access_url=request.path if history_page else url_for(
+                "measurements.location_history", location=request.view_args["location"]
+            ),
+            error=error,
+        ), status
+    abort(404)
+
+
+@app.after_request
+def protect_measurement_response(response):
+    if request.blueprint in {"measurements", "measurement_files"} and request.endpoint != "measurements.static":
+        response.headers.setdefault("Cache-Control", "private, no-store")
+        response.headers["X-Frame-Options"] = "DENY"
+        response.headers["Referrer-Policy"] = "no-referrer"
+    return response
+
+
 def visitor_details(user_agent):
     value = (user_agent or "").lower()
     if "ipad" in value or "tablet" in value:
@@ -1077,12 +1152,12 @@ def location_detail(location):
     return render_page("location", location=location)
 
 
-@app.route("/admin")
+@app.route("/ad")
 def admin_page():
     return render_page("admin")
 
 
-@app.route("/logs")
+@app.route("/lg")
 def logs_page():
     return render_page("logs")
 
@@ -1103,9 +1178,7 @@ def website_control():
     if not password:
         return Response("Website control is not configured.", status=503, mimetype="text/plain")
 
-    credential = hmac.new(
-        app.config["SECRET_KEY"].encode(), password.encode(), hashlib.sha256
-    ).hexdigest()
+    credential = control_password_credential()
     authenticated = (
         hmac.compare_digest(str(session.get("control_credential", "")), credential)
         and session.get("control_expires", 0) > time.time()

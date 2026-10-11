@@ -41,7 +41,7 @@ screenshots, and shared logs.
 
 ## 3. Configure the location in TeraCota
 
-1. Sign in and open `https://teracota.matoug.com/admin`.
+1. Sign in and open `https://teracota.matoug.com/ad`.
 2. Find **Measurement History Configuration**.
 3. Select the customer location.
 4. Set the filename indexes used to extract Car ID and Body ID.
@@ -338,7 +338,7 @@ Unregister-ScheduledTask -TaskName "TeraCota Measurement Upload"
 
 ## 10. Location rename procedure
 
-Location renaming is available only in `/admin` because the location is also the
+Location renaming is available only in `/ad` because the location is also the
 uploader client identifier.
 
 When a location is renamed:
@@ -357,7 +357,7 @@ record, while the uploader client always follows the location.
 ### Doctor reports an invalid client
 
 - Confirm the location exists in the main dashboard.
-- Copy the location name exactly from `/admin`.
+- Copy the location name exactly from `/ad`.
 - Check spaces and capitalization.
 - If the location was renamed, update every production uploader.
 
@@ -397,7 +397,7 @@ sudo -u teracota bash -lc \
 
 ### A system says its source is not mapped
 
-Open `/admin`, find the raw source under the location's discovered sources, and
+Open `/ad`, find the raw source under the location's discovered sources, and
 map it to the correct system. One system can have multiple aliases.
 
 ### The scheduled task did not run

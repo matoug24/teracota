@@ -370,7 +370,7 @@ TERACOTA_HEALTH_ALERT_REPEAT_MINUTES=360
 | `TERACOTA_MEASUREMENT_STORAGE_BACKEND` | Uses protected Lightsail disk storage (`filesystem`) or a private S3 bucket (`s3`). |
 | `TERACOTA_MEASUREMENT_MAX_UPLOAD_BYTES` | Maximum size of one uploaded CSV file. |
 | `TERACOTA_MEASUREMENT_MAX_ARCHIVE_BYTES` | Maximum combined source-file size allowed in one monthly ZIP download. The default is 2 GiB. |
-| `TERACOTA_APP_LOG_PATH` | Rotating JSON application log displayed under the `/logs` Application Log tab. |
+| `TERACOTA_APP_LOG_PATH` | Rotating JSON application log displayed under the `/lg` Application Log tab. |
 | `TERACOTA_APP_LOG_MAX_BYTES` | Size of each application log file before rotation. The example uses 5 MiB. |
 | `TERACOTA_APP_LOG_BACKUPS` | Number of rotated application log files retained. The example keeps five. |
 | `TERACOTA_SMTP_HOST`, `TERACOTA_SMTP_PORT`, `TERACOTA_SMTP_SECURITY` | Gmail SMTP connection settings. The supplied values use encrypted SMTP over port 465. |
@@ -480,7 +480,7 @@ Google app password, put it in `TERACOTA_SMTP_APP_PASSWORD`, and keep the normal
 Google account password out of the server. The application removes spaces from
 the app password before authentication.
 
-After TeraCota starts, open `/admin`, select **Locations**, and configure each
+After TeraCota starts, open `/ad`, select **Locations**, and configure each
 location independently:
 
 1. Add each team address as its own recipient row.
@@ -614,8 +614,8 @@ Verify in a browser:
 2. Login appears before application data.
 3. Login works with the `.env` credentials.
 4. The Systems dashboard loads.
-5. `/admin`, `/statistics`, `/issues`, and `/logs` load after login.
-   In `/admin`, confirm Server Health loads. Open `/logs`, select **Application Log**, and confirm it contains the authenticated page request.
+5. `/ad`, `/statistics`, `/issues`, and `/lg` load after login.
+   In `/ad`, confirm Server Health loads. Open `/lg`, select **Application Log**, and confirm it contains the authenticated page request.
 6. Static assets under `/assets/css`, `/assets/js`, and
    `/assets/measurements` load without HTTP 404 errors.
 7. Add a temporary system, issue, and visit and test editing.
@@ -690,7 +690,7 @@ The updater:
 The service can take a few seconds to bind port `8000` after the restart. The
 updater allows up to 10 seconds for each local health response and retries for
 roughly three minutes. The health route uses lightweight read-only database
-probes; full SQLite integrity checks remain available in `/admin`. If the
+probes; full SQLite integrity checks remain available in `/ad`. If the
 service never becomes healthy, the update fails and prints the recent systemd
 journal; `Health: OK` at the end means startup completed successfully.
 
@@ -900,7 +900,7 @@ whether historical files should be uploaded again before restarting each task.
 
 ### Move data to a replacement server
 
-For operational records only, export CSV from `/admin`, install the new server,
+For operational records only, export CSV from `/ad`, install the new server,
 and restore the CSV there. This does not move visitor logs or Measurement History.
 
 For a complete move:
@@ -928,7 +928,7 @@ sudo ls -la /opt/teracota
 
 For updates, run `sudo update-teracota` without changing directory.
 
-### Dashboard empty, Add System missing, or `/admin` blank
+### Dashboard empty, Add System missing, or `/ad` blank
 
 The running process may have an older HTML template while newer JavaScript files
 are on disk, or `/api/state` may have failed.
@@ -1030,7 +1030,7 @@ sudo -u teracota bash -lc \
 ```
 
 If the system page says a source is not mapped, add the discovered source alias
-to that system under `/admin`. See `MEASUREMENT_UPLOAD_GUIDE.md` for uploader
+to that system under `/ad`. See `MEASUREMENT_UPLOAD_GUIDE.md` for uploader
 diagnostics and failed-batch retry instructions.
 
 If the page reports `The chart library could not be loaded`, confirm that the
@@ -1139,7 +1139,7 @@ state. Click a nonzero failed-batch count to inspect batch and file errors.
 run a large import inside the Gunicorn request. The 4:00 AM importer processes
 it, or an administrator can start `teracota-measurement-import.service`
 manually. The panel cannot run shell commands, restart services, or read the
-wider system journal. The `/logs` route keeps visitor records and the bounded
+wider system journal. The `/lg` route keeps visitor records and the bounded
 rotating Flask application log in separate tabs.
 
 ## 20. If the GitHub repository becomes private
@@ -1279,7 +1279,7 @@ On the replacement instance:
 - Maintain regular off-server backups.
 - Back up both measurement databases and the object store in addition to the
   main operations database.
-- Review `/logs` for unexpected access.
+- Review `/lg` for unexpected access.
 - The current app has one shared administrative login.
 - Add individual accounts, roles, rate limiting, and stronger auditing before expanding access.
 

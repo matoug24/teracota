@@ -1,0 +1,15 @@
+.measurement-unavailable { padding: 48px 24px; }
+#measurementAccessDialog {
+  width: min(360px, calc(100vw - 48px));
+  padding: 28px;
+  border: 1px solid #cbd5e1;
+  border-radius: 12px;
+  background: #fff;
+  color: #172033;
+}
+#measurementAccessDialog::backdrop { background: rgb(15 23 42 / 35%); }
+#measurementAccessDialog h2 { margin: 0 0 20px; }
+#measurementAccessDialog label { display: block; margin-bottom: 8px; }
+#measurementAccessPassword { width: 100%; box-sizing: border-box; padding: 10px; }
+.measurement-access-actions { display: flex; justify-content: flex-end; gap: 12px; margin-top: 24px; }
+.measurement-access-actions button { padding: 8px 16px; cursor: pointer; }

@@ -52,7 +52,7 @@ from measurements.summarizer import summarize_csv  # noqa: E402
 class MeasurementIntegrationTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
-        app_module.app.config.update(TESTING=True)
+        app_module.app.config.update(TESTING=True, TERACOTA_CONTROL_PASSWORD="measurement-test-password")
         app_module.init_db()
         with app_module.get_db() as connection:
             connection.execute(
@@ -80,6 +80,8 @@ class MeasurementIntegrationTests(unittest.TestCase):
         with cls.client.session_transaction() as session:
             session["logged_in"] = True
             session["username"] = "teraview"
+            session["measurement_credential"] = app_module.control_password_credential()
+            session["measurement_expires"] = app_module.time.time() + 1800
 
     @classmethod
     def tearDownClass(cls):
@@ -97,6 +99,78 @@ class MeasurementIntegrationTests(unittest.TestCase):
         self.assertEqual(response.status_code, 400)
         self.assertIn("existing location", response.get_json()["error"])
 
+    def measurement_client(self):
+        client = app_module.app.test_client()
+        with client.session_transaction() as session:
+            session["logged_in"] = True
+        return client
+
+    def test_measurement_access_hides_data_and_protects_direct_requests(self):
+        client = self.measurement_client()
+        for path in (
+            "/measurements/location/Client%20Plant",
+            "/measurements/system/1",
+            "/measurements/files/Client%20Plant",
+        ):
+            page = client.get(path)
+            self.assertEqual(page.status_code, 200)
+            html = page.get_data(as_text=True)
+            self.assertIn("This view is currently unavailable.", html)
+            self.assertNotIn("measurementPerformanceChart", html)
+            self.assertNotIn("plotly", html)
+            self.assertNotIn("data-location=", html)
+            self.assertIn('<dialog id="measurementAccessDialog" >', html)
+            self.assertEqual(page.headers["Cache-Control"], "private, no-store")
+        for path in (
+            "/api/measurements/options?location=Client%20Plant",
+            "/api/measurements/summary?location=Client%20Plant",
+            "/api/measurements/operation?location=Client%20Plant",
+            "/api/measurements/jobs-by-color?location=Client%20Plant",
+            "/api/measurements/performance?location=Client%20Plant",
+            "/api/measurements/metrics/thickness?location=Client%20Plant",
+            "/api/measurements/status?location=Client%20Plant",
+            "/api/measurements/files?location=Client%20Plant&year=2026&month=3",
+            "/measurements/files/file/1",
+            "/measurements/files/Client%20Plant/archive/2026/3",
+        ):
+            with self.subTest(path=path):
+                self.assertEqual(client.get(path).status_code, 404)
+
+    def test_measurement_password_csrf_expiry_and_rotation(self):
+        client = self.measurement_client()
+        path = "/measurements/location/Client%20Plant"
+        client.get(path)
+        with client.session_transaction() as session:
+            token = session["measurement_csrf"]
+        password = app_module.app.config["TERACOTA_CONTROL_PASSWORD"]
+        self.assertEqual(client.post(path, data={"password": password}).status_code, 400)
+        self.assertEqual(client.post(path, data={"password": "incorrect", "csrf_token": token}).status_code, 401)
+        result = client.post(path, data={"password": password, "csrf_token": token})
+        self.assertEqual(result.status_code, 303)
+        self.assertIn("measurementPerformanceChart", client.get(path).get_data(as_text=True))
+        self.assertEqual(client.get("/api/measurements/options?location=Client%20Plant").status_code, 200)
+        with client.session_transaction() as session:
+            self.assertNotIn("control_credential", session)
+            self.assertNotEqual(session["measurement_csrf"], token)
+        with patch.dict(app_module.app.config, {"TERACOTA_CONTROL_PASSWORD": "rotated"}):
+            self.assertEqual(client.get("/api/measurements/options?location=Client%20Plant").status_code, 404)
+        with client.session_transaction() as session:
+            session["measurement_expires"] = 0
+        self.assertIn("This view is currently unavailable.", client.get(path).get_data(as_text=True))
+
+    def test_measurement_access_fails_closed_without_control_password(self):
+        client = self.measurement_client()
+        path = "/measurements/system/1"
+        with patch.dict(app_module.app.config, {"TERACOTA_CONTROL_PASSWORD": ""}):
+            client.get(path)
+            with client.session_transaction() as session:
+                token = session["measurement_csrf"]
+            self.assertEqual(client.post(path, data={"password": "", "csrf_token": token}).status_code, 401)
+            self.assertEqual(client.get("/api/measurements/options?location=Client%20Plant").status_code, 404)
+        anonymous = app_module.app.test_client()
+        self.assertEqual(anonymous.get(path).status_code, 302)
+        self.assertEqual(anonymous.get("/api/measurements/options?location=Client%20Plant").status_code, 401)
+
     def test_offline_mode_blocks_browser_access_before_authentication(self):
         with patch.dict(app_module.app.config, {"TERACOTA_ONLINE": False}):
             for client in (app_module.app.test_client(), self.client):
@@ -104,7 +178,8 @@ class MeasurementIntegrationTests(unittest.TestCase):
                     ("GET", "/"),
                     ("GET", "/login"),
                     ("POST", "/login"),
-                    ("GET", "/admin"),
+                    ("GET", "/ad"),
+                    ("GET", "/lg"),
                     ("GET", "/measurements/location/Client%20Plant"),
                     ("GET", "/measurements/files/Client%20Plant"),
                     ("GET", "/assets/js/app.js"),
@@ -343,14 +418,14 @@ class MeasurementIntegrationTests(unittest.TestCase):
             self.assertEqual(status, "VERIFIED")
             connection.execute("DELETE FROM upload_batches WHERE id='failed-test-batch'")
 
-        self.client.get("/admin")
+        self.client.get("/ad")
         logs = self.client.get("/api/admin/application-logs?level=ALL&limit=9999")
         self.assertEqual(logs.status_code, 200)
         log_payload = logs.get_json()
         self.assertEqual(log_payload["limit"], 500)
         self.assertTrue(log_payload["entries"])
         self.assertTrue(
-            any("GET /admin" in entry["message"] for entry in log_payload["entries"])
+            any("GET /ad" in entry["message"] for entry in log_payload["entries"])
         )
         app_module.app.logger.warning("Monitoring warning test")
         warnings = self.client.get(
@@ -675,6 +750,11 @@ class MeasurementIntegrationTests(unittest.TestCase):
         self.assertEqual(aliases, ["Robot_2_SN203", "Robot_2_SN999"])
 
     def test_page_shell_matches_requested_view_before_javascript_loads(self):
+        for path, page_name in (("/ad", "admin"), ("/lg", "logs")):
+            page = self.client.get(path)
+            self.assertEqual(page.status_code, 200)
+            self.assertIn(f'data-page="{page_name}"', page.get_data(as_text=True))
+
         statistics = self.client.get("/statistics")
         self.assertEqual(statistics.status_code, 200)
         statistics_html = statistics.get_data(as_text=True)

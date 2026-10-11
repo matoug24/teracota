@@ -1,0 +1,44 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta name="robots" content="noindex, nofollow" />
+    <title>Measurement History - TeraCota 2000</title>
+    <link rel="stylesheet" href="{{ url_for('static', filename=theme_css) }}" />
+    <link rel="stylesheet" href="{{ url_for('measurements.static', filename='access.css') }}" />
+  </head>
+  <body>
+    <div class="app-shell">
+      <header class="topbar">
+        <div class="brand">
+          <div class="brand-mark" id="measurementAccessTrigger">TC</div>
+          <div><h1>TeraCota 2000</h1><p>Automotive operations tracker</p></div>
+        </div>
+        <nav class="nav-tabs" aria-label="Navigation">
+          <a class="nav-tab" href="{{ url_for('index') }}">Back to Operations</a>
+        </nav>
+      </header>
+      <main class="measurement-unavailable">
+        <h2>Measurement History</h2>
+        <p>This view is currently unavailable.</p>
+      </main>
+    </div>
+    {% if access_url %}
+    <dialog id="measurementAccessDialog" {% if error %}data-reopen="true"{% endif %}>
+      <form method="post" action="{{ access_url }}">
+        <h2>Continue</h2>
+        {% if error %}<p role="alert">{{ error }}</p>{% endif %}
+        <input type="hidden" name="csrf_token" value="{{ csrf_token }}" />
+        <label for="measurementAccessPassword">Password</label>
+        <input id="measurementAccessPassword" name="password" type="password" autocomplete="current-password" required />
+        <div class="measurement-access-actions">
+          <button type="button" id="measurementAccessCancel">Cancel</button>
+          <button type="submit">Continue</button>
+        </div>
+      </form>
+    </dialog>
+    <script src="{{ url_for('measurements.static', filename='access.js') }}"></script>
+    {% endif %}
+  </body>
+</html>

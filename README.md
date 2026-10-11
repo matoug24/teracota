@@ -19,11 +19,21 @@ be accessed.
 - Deleted issue and visit recovery from the admin page
 - Visitor logs for authenticated sessions
 - Server health with failed measurement-import details, retry queuing, and warning emails
-- Visitor records and the rotating Flask application log under separate `/logs` tabs
+- Visitor records and the rotating Flask application log under separate `/lg` tabs
 - Concise HTML update emails and 5:00 AM three-day measurement comparisons by robot
 - Operational statistics
 - Measurement summaries imported from production CSV files
 - Source aliases that map one or more raw robot names to a TeraCota system
+
+Measurement History and raw CSV downloads require the same password configured
+in `TERACOTA_CONTROL_PASSWORD` for `/website-control`, in addition to the normal
+site login. Before access is granted, Measurement History shows a neutral
+unavailable view. Double-click the TC logo on that view, or press Ctrl+Shift+M,
+to reveal the password dialog. Access lasts 30 minutes and is revoked when the
+configured password changes. Measurement access does not grant website-control
+privileges. Without a configured control password, measurement access remains
+closed. The discreet prompt can still be discovered by inspecting browser source;
+the server also protects the analytics APIs and raw file downloads.
 
 ## Project layout
 
@@ -201,12 +211,12 @@ real uploader configuration are excluded by `.gitignore`.
 | `/measurements/system/<id>` | Measurement History filtered to one system |
 | `/measurements/location/<name>` | Measurement History for all systems at a location |
 | `/measurements/files/<name>` | Authenticated raw CSV browser and monthly ZIP downloads for one location |
-| `/admin` | System administration, ordering, recovery, export, and measurement configuration |
+| `/ad` | System administration, ordering, recovery, export, and measurement configuration |
 | `/statistics` | Operational statistics |
-| `/logs` | Authenticated visitor records and rotating application log |
+| `/lg` | Authenticated visitor records and rotating application log |
 | `/healthz` | Health response used by deployment checks |
 
-Do not link `/admin` or `/logs` into the main navigation unless that product
+Do not link `/ad` or `/lg` into the main navigation unless that product
 decision changes. They are intentionally accessed by route.
 
 The admin page is divided into Monitoring, Locations, Systems, Settings, and
@@ -222,7 +232,7 @@ to the browser or stored in the database.
 ## Measurement workflow
 
 1. Create the location and systems in TeraCota.
-2. Configure filename parsing and robot source aliases in `/admin`.
+2. Configure filename parsing and robot source aliases in `/ad`.
 3. Run the Windows uploader on the production data computer.
 4. The uploader sends stable CSV files through the token-protected upload API.
 5. The Lightsail timer runs `python -m measurements.importer` daily at 4:00 AM

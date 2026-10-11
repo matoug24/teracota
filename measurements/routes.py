@@ -57,7 +57,7 @@ def create_blueprint(theme_getter):
             aliases = aliases_for_system(system_id, location)
         return location, aliases
 
-    @blueprint.get("/measurements/location/<path:location>")
+    @blueprint.route("/measurements/location/<path:location>", methods=["GET", "POST"])
     def location_history(location: str):
         if not location_exists(location):
             abort(404)
@@ -70,7 +70,7 @@ def create_blueprint(theme_getter):
             back_url=url_for("location_detail", location=location),
         )
 
-    @blueprint.get("/measurements/system/<int:system_id>")
+    @blueprint.route("/measurements/system/<int:system_id>", methods=["GET", "POST"])
     def system_history(system_id: int):
         system = system_context(system_id)
         if not system:
